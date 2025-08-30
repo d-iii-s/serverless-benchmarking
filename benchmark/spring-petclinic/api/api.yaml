@@ -1,0 +1,206 @@
+# Author: Artem Bakhtin
+openapi: 3.0.3
+info:
+  title: Spring Petclinic API
+  version: 1.0.0
+  description: OpenAPI specification for the main REST endpoints of the Spring Petclinic application.
+servers:
+  - url: http://localhost:{port}
+    variables:
+        port:
+          default: '8006'
+          description: The port number of the server
+paths:
+  /owners/new:
+    post:
+      summary: Create new owner
+      parameters:
+        - name: Host
+          in: header
+          required: true
+          schema:
+            type: string
+          description: The host of the server
+          example: "localhost:8006"
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+                address:
+                  type: string
+                city:
+                  type: string
+                telephone:
+                  type: string
+              required:
+                - firstName
+                - lastName
+                - address
+                - city
+                - telephone
+            examples:
+              exampleNewOwner:
+                summary: Example owner creation
+                value: "firstName=firstRequest&lastName=firstRequest&address=firstRequest&city=firstRequest&telephone=1"
+  /owners/{ownerId}/pets/new:
+    post:
+      summary: Create new pet
+      parameters:
+        - name: ownerId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID of the owner
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                birthDate:
+                  type: string
+                  format: date
+                type:
+                  type: string
+              required:
+                - name
+                - birthDate
+                - type
+            examples:
+              exampleNewPet:
+                summary: Example pet creation
+                value: "name=Pet1&birthDate=2010-10-05&type=dog"
+  /owners/{ownerId}/pets/{petId}/visits/new:
+    post:
+      summary: Create new visit
+      parameters:
+        - name: ownerId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID of the owner
+          example: 1
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID of the pet
+          example: 1
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                date:
+                  type: string
+                  format: date
+                description:
+                  type: string
+              required:
+                - date
+                - description
+            examples:
+              exampleNewVisit:
+                summary: Example visit creation
+                value: "date=2021-02-23&description=Broken+leg"
+  /owners/{ownerId}:
+    get:
+      summary: Get owner by ID
+      parameters:
+        - name: ownerId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: ID of the owner
+          example: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            examples:
+              ownersExample:
+                value: ""
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Owner'
+components:
+  schemas:
+    Owner:
+      type: object
+      properties:
+        id:
+          type: integer
+        firstName:
+          type: string
+        lastName:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+        telephone:
+          type: string
+        pets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Pet'
+    Pet:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        birthDate:
+          type: string
+          format: date
+        type:
+          type: string
+        visits:
+          type: array
+          items:
+            $ref: '#/components/schemas/Visit'
+    Visit:
+      type: object
+      properties:
+        id:
+          type: integer
+        date:
+          type: string
+          format: date
+        description:
+          type: string
+    Vet:
+      type: object
+      properties:
+        id:
+          type: integer
+        firstName:
+          type: string
+        lastName:
+          type: string
+        specialties:
+          type: array
+          items:
+            type: string 

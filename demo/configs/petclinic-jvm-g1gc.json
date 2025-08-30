@@ -1,0 +1,11 @@
+{
+  "benchmarkName": "spring-petclinic",
+  "workloadImage": "aape2k/workload-generator",
+  "benchmarkImage": "aape2k/petclinic-jvm",
+  "hostPort": "8006",
+  "resultPath": "./data/petclinic-jvm-g1gc",
+  "benchmarksRootPath": "../benchmark",
+  "benchmarkConfigName": "mixed-requests",
+  "wrk2params": "-t2 -c100 -d30s -R2000 --latency",
+  "javaOptions": "-Xmx2g -Xss1m -XX:+UseG1GC"
+}

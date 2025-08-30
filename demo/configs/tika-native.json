@@ -1,0 +1,11 @@
+{
+  "benchmarkName": "quarkus-tika",
+  "workloadImage": "aape2k/workload-generator",
+  "benchmarkImage": "aape2k/tika-native",
+  "hostPort": "8004",
+  "resultPath": "./data/tika-native",
+  "benchmarksRootPath": "../benchmark",
+  "benchmarkConfigName": "mixed-requests",
+  "wrk2params": "-t2 -c100 -d30s -R2000 --latency",
+  "javaOptions": "-H:MaxHeapSize=2g -H:StackSize=1m"
+}

@@ -1,0 +1,23 @@
+[
+    {
+        "name": "mixed-requests",
+        "exampleName": "samplePDF",
+        "wrkScripts": [
+            "mix-requests.lua"
+        ]
+    },
+    {
+        "name": "odt-requests",
+        "exampleName": "sampleODT",
+        "wrkScripts": [
+            "requests.lua"
+        ]
+    },
+    {
+        "name": "pdf-requests",
+        "exampleName": "samplePDF",
+        "wrkScripts": [
+            "requests.lua"
+        ]
+    }
+]

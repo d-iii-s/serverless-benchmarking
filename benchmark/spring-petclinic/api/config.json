@@ -1,0 +1,20 @@
+[
+    {
+        "name": "create-read-pipeline",
+        "exampleName": "exampleNewOwner",
+        "wrkScripts": [
+            "create-owner.lua",
+            "create-pet.lua",
+            "read-pet-ids.lua",
+            "create-visit.lua",
+            "read-owner.lua"
+        ]
+    },
+    {
+        "name": "mixed-requests",
+        "exampleName": "exampleNewOwner",
+        "wrkScripts": [
+            "mixed-requests.lua"
+        ]
+    }
+]

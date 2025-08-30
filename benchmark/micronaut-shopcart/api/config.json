@@ -1,0 +1,18 @@
+[
+    {
+        "name": "create-populate-read-pipeline",
+        "exampleName": "newClient",
+        "wrkScripts": [
+            "create-shop-carts.lua",
+            "populate-shop-carts.lua",
+            "read-shop-carts.lua"
+        ]
+    }, 
+    {
+        "name": "mixed-requests",
+        "exampleName": "newClient",
+        "wrkScripts": [
+            "mixed-requests.lua"
+        ]
+    }
+]
