@@ -13,7 +13,7 @@
 
 ### Building binary
 
-The binary file can be downloaded from the artifacts section of the Git repository or built locally. To build the binary locally, a minimum Go version of 1.23.2 is required. Assuming you are in the root of the project, the following command will produce a binary named serverless-benchmark:
+The binary file can be downloaded from the latest release or built locally. To build the binary locally, a minimum Go version of 1.23.2 is required. Assuming you are in the root of the project, the following command will produce a binary named serverless-benchmark:
 
 ```bash
  go build -o serverless-benchmark ./cmd
