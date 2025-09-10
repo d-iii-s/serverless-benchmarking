@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  GO_VERSION: "1.23.2"
+  GOPATH: "${{ github.workspace }}/go"
+  GOCACHE: "${{ github.workspace }}/.cache/go-build"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false  # we'll do explicit caches below
+
+      # Cache the module download dir and the build cache
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-modules-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-modules-
+            ${{ runner.os }}-go-
+
+      - name: Cache Go build cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.GOCACHE }}
+          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-gocache-${{ hashFiles('**/*.go', '**/go.mod', '**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ env.GO_VERSION }}-gocache-
+            ${{ runner.os }}-go-
+
+      - name: Prepare build cache directory (like before_script)
+        run: mkdir -p "${GOCACHE}"
+
+      - name: Build
+        working-directory: harness
+        run: |
+          go mod tidy
+          cd cmd
+          go build -o serverless-benchmark .
+          mv serverless-benchmark "${GITHUB_WORKSPACE}/"
+
+      - name: Upload artifact (serverless-benchmark)
+        uses: actions/upload-artifact@v4
+        with:
+          name: serverless-benchmark
+          path: serverless-benchmark
