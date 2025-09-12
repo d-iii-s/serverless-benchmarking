@@ -16,7 +16,7 @@ benchmark. This feature is critical for obtaining accurate performance compariso
 Additionally, many existing serverless benchmarks suites do not offer a
 comprehensive set of benchmarks or lack mechanisms to collect new metrics.
 
-# Simular projects
+# Similar projects
 
 The following projects are among the most prominent open-source serverless benchmarking suites:
 
