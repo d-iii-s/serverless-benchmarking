@@ -31,7 +31,7 @@ The primary goal of this project is to provide a comprehensive, extensible suite
 - **Easy Extension:** Add your own benchmark with minimal effort (see [Extension Guide](docs/extension-guide.md))
 
 ## Project **Structure**
-- `/benchmark` – Sample bencharmks ([details](benchmark/README.md))
+- `/benchmark` – Sample benchmarks ([details](benchmark/README.md))
 - `/harness` – Benchmark harness source code
 - `/demo` – Demo and sample analysis ([sample demo](demo/report.pdf))
 
@@ -47,7 +47,7 @@ The primary goal of this project is to provide a comprehensive, extensible suite
   Read the [Abstract](docs/abstract.md) for background, motivation, and a summary of the suite's objectives.
 
 - **For details on included benchmarks:**  
-  See [Benhcmarks Details](benchmark/README.md) for descriptions of the sample benchmarks and their endpoints.
+  See [Benchmarks Details](benchmark/README.md) for descriptions of the sample benchmarks and their endpoints.
 
 - **For technical architecture and development:**  
   Visit [Development & Architecture](docs/development-architecture.md) for an overview of the harness, workflow, and extension points.
