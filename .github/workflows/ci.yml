@@ -2,61 +2,130 @@ name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - extension-mechanism-redesign
+      - main
   pull_request:
-
-env:
-  GO_VERSION: "1.23.2"
-  GOPATH: "${{ github.workspace }}/go"
-  GOCACHE: "${{ github.workspace }}/.cache/go-build"
+    branches:
+      - extension-mechanism-redesign
+      - main
 
 jobs:
-  build:
+  test:
+    name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: false  # we'll do explicit caches below
+          go-version: '1.24'
 
-      # Cache the module download dir and the build cache
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
-          path: |
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-modules-${{ hashFiles('**/go.sum') }}
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ env.GO_VERSION }}-modules-
             ${{ runner.os }}-go-
 
-      - name: Cache Go build cache
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run tests
+        run: go test ./internal/service/scenario-builder ./internal/service/enrich ./internal/service/walker
+
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: slsbench-linux-amd64
+            binary_name: slsbench
+          - os: windows-latest
+            artifact_name: slsbench-windows-amd64
+            binary_name: slsbench.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Cache Go modules
         uses: actions/cache@v4
         with:
-          path: ${{ env.GOCACHE }}
-          key: ${{ runner.os }}-go-${{ env.GO_VERSION }}-gocache-${{ hashFiles('**/*.go', '**/go.mod', '**/go.sum') }}
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go-${{ env.GO_VERSION }}-gocache-
             ${{ runner.os }}-go-
 
-      - name: Prepare build cache directory (like before_script)
-        run: mkdir -p "${GOCACHE}"
+      - name: Download dependencies
+        run: go mod download
 
       - name: Build
-        working-directory: harness
-        run: |
-          go mod tidy
-          cd cmd
-          go build -o serverless-benchmark .
-          mv serverless-benchmark "${GITHUB_WORKSPACE}/"
+        run: go build -o ${{ matrix.binary_name }} ./cmd/slsbench
 
-      - name: Upload artifact (serverless-benchmark)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: serverless-benchmark
-          path: serverless-benchmark
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.binary_name }}
+          retention-days: 7
+
+  release:
+    name: Release
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: slsbench-*
+
+      - name: Create release archives
+        run: |
+          mkdir -p release
+          # Find and package Linux binary
+          if [ -f "artifacts/slsbench-linux-amd64/slsbench" ]; then
+            tar -czf release/slsbench-linux-amd64.tar.gz -C artifacts/slsbench-linux-amd64 slsbench
+          fi
+          # Find and package Windows binary
+          if [ -f "artifacts/slsbench-windows-amd64/slsbench.exe" ]; then
+            cd artifacts/slsbench-windows-amd64
+            zip -r ../../release/slsbench-windows-amd64.zip slsbench.exe
+            cd ../..
+          fi
+
+      - name: Create checksums
+        run: |
+          cd release
+          for file in *.tar.gz *.zip; do
+            sha256sum "$file" > "${file}.sha256"
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

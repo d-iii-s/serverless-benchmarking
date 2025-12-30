@@ -1,0 +1,29 @@
+stages:
+  - build
+  - test
+
+variables:
+  GO_VERSION: "1.24"
+  GOPATH: "$CI_PROJECT_DIR/go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+
+before_script:
+  - mkdir -p $GOCACHE
+
+build:
+  stage: build
+  image: golang:$GO_VERSION
+  script:
+    - go mod tidy
+    - cd cmd/tool
+    - go build -o serverless-benchmark .
+    - mv serverless-benchmark $CI_PROJECT_DIR/
+  artifacts:
+    paths:
+      - serverless-benchmark
+
+test:
+  stage: test
+  image: golang:$GO_VERSION
+  script:
+    - go test ./internal/service/scenario-builder ./internal/service/enrich ./internal/service/walker

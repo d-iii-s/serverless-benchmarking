@@ -1,8 +1,7 @@
 .idea
-benchmark/.idea
-harness/.idea
-demo/.venv
+.gradle
 .venv
-demo/data
-demo/.ipynb_checkpoints
-resultPath
+bin/
+pkg/
+workdir/
+build/

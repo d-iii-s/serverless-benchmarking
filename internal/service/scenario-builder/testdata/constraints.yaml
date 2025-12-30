@@ -1,0 +1,48 @@
+openapi: 3.0.0
+info:
+  title: Constraints API
+  version: 1.0.0
+paths:
+  /api/test:
+    post:
+      summary: Test constraints
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                # String with length constraints and pattern
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 20
+                  pattern: "^[a-zA-Z0-9_]+$"
+                  format: string
+                # String with format
+                email:
+                  type: string
+                  format: email
+                  minLength: 5
+                  maxLength: 100
+                # Integer with min/max
+                age:
+                  type: integer
+                  format: int32
+                  minimum: 0
+                  maximum: 150
+                # Number with min/max
+                price:
+                  type: number
+                  format: double
+                  minimum: 0.0
+                  maximum: 10000.0
+                # String with pattern only
+                phone:
+                  type: string
+                  pattern: "^\\+?[1-9]\\d{1,14}$"
+      responses:
+        '201':
+          description: Created
+

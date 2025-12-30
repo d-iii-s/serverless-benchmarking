@@ -1,0 +1,47 @@
+openapi: 3.0.0
+info:
+  title: Complex Nested API
+  version: 1.0.0
+paths:
+  /api/users:
+    get:
+      summary: Get users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    properties:
+                      profile:
+                        type: object
+                        properties:
+                          personal:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              age:
+                                type: integer
+                          contact:
+                            type: object
+                            properties:
+                              email:
+                                type: string
+                              phone:
+                                type: string
+                      settings:
+                        type: object
+                        properties:
+                          preferences:
+                            type: object
+                            properties:
+                              theme:
+                                type: string
+                              language:
+                                type: string
+

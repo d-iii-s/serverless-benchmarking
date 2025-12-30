@@ -1,204 +1,109 @@
 # Serverless Benchmark Suite
 
-## Introduction
+## Installation
 
-The **Serverless Benchmark Suite** is a comprehensive framework designed to evaluate the performance of serverless and containerized Java workloads. At its core is a powerful **harness** that automates the process of launching, managing, and measuring serverless applications under realistic workloads. The suite provides a standardized environment for running benchmarks, collecting key metrics (such as startup time, throughput, and resource usage), and ensuring repeatable, reliable results across different frameworks and deployment modes. By aggregating a variety of sample workloads and offering easy extensibility, the Serverless Benchmark Suite enables researchers and engineers to systematically compare serverless platforms and optimize application performance.
+### Prerequisites
 
-## Goals
+- **Go 1.24+** - [Install Go](https://go.dev/doc/install)
+- **Docker** - Required for running benchmarks (the tool uses Docker Compose)
+- **Docker Compose** - Usually included with Docker Desktop
 
-The primary goal of this project is to provide a comprehensive, extensible suite for benchmarking serverless Java workloads. Specifically, we aim to:
+### Install the CLI Tool
 
-- Design and implement a robust, extensible harness for executing and measuring serverless workloads in both JVM and native (AOT) modes.
-- Integrate a diverse set of real-world benchmarks, covering multiple Java frameworks and typical serverless use cases.
-- Enable easy addition of new workloads and frameworks by users.
-- Collect and report key performance metrics, such as startup time, throughput, and resource usage, in a consistent and repeatable manner.
+> **Note:** This is a private repository. You'll need appropriate access and authentication configured.
 
-## Scope
+#### Build from Source
 
-For more information on project motivation and goals, see the [Abstract](docs/abstract.md).
+Clone the repository and build locally:
 
-For a detailed requirements analysis, see [Requirements Analysis](docs/requirements_analysis.md).
+```bash
+git clone <repository-url>
+cd serverless-benchmarking
+git checkout extension-mechanism-redesign
+```
 
-- **What's included:**
-  - Benchmark harness for orchestrating and measuring serverless workloads
-  - Sample workloads for three major Java frameworks
-  - Data collection and reporting of key metrics
-- **What's not included:**
-  - Built-in analysis tools
-- **Intended audience:**
-  - Researchers, engineers, and performance testers interested in serverless Java performance
+**Option 1: Use the build script (Recommended)**
 
-### **Use Case Example**
+The `build.sh` script will check all prerequisites and build the binary:
 
-**Scenario:** A development team is evaluating whether to deploy their Spring Boot microservice as a traditional JVM application or as a GraalVM native image in a serverless environment. They need to understand the trade-offs between startup time, memory usage, and throughput.
+```bash
+./build.sh
+```
 
-**Solution:** Using the Serverless Benchmark Suite, the team can:
-1. Configure the harness to run their Spring Boot application in both JVM and native modes
-2. Execute identical workloads against both versions using the same API endpoints
-3. Collect comprehensive metrics including:
-   - Cold start time (time to first request)
-   - Memory consumption during startup and steady-state operation
-   - Throughput under various load conditions
-   - CPU utilization patterns
-4. Compare results to make an informed decision about deployment strategy
+This script will:
+- Check for Go 1.24+, Git, Docker, and Docker Compose
+- Verify Docker is running
+- Build the `slsbench` binary if all requirements are met
 
-**Outcome:** The team gains quantitative data showing that while the native image has a 3x faster startup time and 40% lower memory usage, the JVM version provides 15% higher throughput under sustained load, enabling them to choose the optimal deployment strategy based on their specific requirements.
+**Option 2: Manual build**
 
+If you prefer to build manually:
 
+```bash
+go build -o slsbench ./cmd/slsbench
+```
 
-## Features
-- **Harness:** Unified tool for launching, managing, and measuring serverless workloads
-- **Data Collection:** Automatic collection of startup time, throughput, resource usage, and other metrics
-- **Metrics:** Startup time, time to first response, throughput, CPU/memory usage, and more
-- **Sample Benchmarks:** Ready-to-use benchmarks for Spring, Micronaut, Quarkus, and more (see [Benchmark Details](benchmark/README.md) for specifics)
-- **Easy Extension:** Add your own benchmark with minimal effort (see [Extension Guide](docs/extension-guide.md))
+**Install the binary**
 
-## Project **Structure**
-- `/benchmark` – Sample benchmarks ([details](benchmark/README.md))
-- `/harness` – Benchmark harness source code
-- `/demo` – Demo and sample analysis ([sample demo](demo/report.pdf))
+After building, you can move the binary to a directory in your PATH:
 
-## Where to Find More Information
+```bash
+sudo mv slsbench /usr/local/bin/
+# or
+mv slsbench ~/go/bin/
+```
 
-- **To run benchmarks and collect data:**  
-  See the [Running & Data Collection Guide](docs/running-and-collection.md) for step-by-step instructions on executing workloads and gathering results.
+### Verify Installation
 
-- **To add or extend benchmarks:**  
-  Refer to the [Extension Guide](docs/extension-guide.md) for details on integrating your own workloads or extending the suite.
+Check that the tool is installed correctly:
 
-- **For project motivation and goals:**  
-  Read the [Abstract](docs/abstract.md) for background, motivation, and a summary of the suite's objectives.
+```bash
+slsbench help
+```
 
-- **For details on included benchmarks:**  
-  See [Benchmarks Details](benchmark/README.md) for descriptions of the sample benchmarks and their endpoints.
+You should see the help menu with available commands.
 
-- **For technical architecture and development:**  
-  Visit [Development & Architecture](docs/development-architecture.md) for an overview of the harness, workflow, and extension points.
+## Quick Start
 
-- **Demo:**
-  Visit [Sample demo README](demo/README.md)
+The tool provides three main commands for the benchmarking workflow:
 
-## Technologies Used
+### 1. Enrich OpenAPI Specification
 
-This project leverages a diverse technology stack carefully chosen to address the specific requirements of serverless Java benchmarking. Each technology serves a distinct purpose in the overall architecture:
+Enrich an OpenAPI specification file with additional metadata:
 
-### **Core Technologies**
+```bash
+slsbench enrich -specification-path ./api.yaml -output-path ./enriched
+```
 
-#### **Go (Golang) - Benchmark Harness**
-- **Version:** Go 1.23.2
-- **Purpose:** The main orchestration and management system
-- **Why Go:** 
-  - Excellent concurrency support
-  - Strong Docker integration capabilities
-  - Fast compilation and execution for real-time monitoring
-  - Cross-platform compatibility for diverse deployment environments
-  - Minimal runtime overhead for accurate performance measurements
+### 2. Generate Scenario
 
-#### **Docker - Containerization**
-- **Purpose:** Standardized deployment and isolation of benchmark workloads
-- **Why Docker:**
-  - Ensures consistent runtime environments across different systems
-  - Enables easy deployment of both JVM and native Java applications
-  - Provides resource isolation for accurate performance measurements
-  - Simplifies dependency management and environment setup
+Generate a scenario file from an enriched OpenAPI specification:
 
-### **Java Frameworks & Runtimes**
+```bash
+slsbench scenario -enriched-specification-path ./enriched/enriched-spec-*.yaml -output-path ./scenarios
+```
 
-#### **Spring Boot 3.0.4**
-- **Purpose:** Traditional JVM-based serverless workload
-- **Why Spring Boot:**
-  - Integrated from an existing project
+### 3. Run Benchmark Harness
 
-#### **Micronaut 4.3.1**
-- **Purpose:** Lightweight, cloud-native Java framework
-- **Why Micronaut:**
-  - Integrated from an existing project
+Run the benchmark harness against a service:
 
-#### **Quarkus 3.7.1**
-- **Purpose:** Kubernetes-native Java framework optimized for containers
-- **Why Quarkus:**
-  - Integrated from an existing project
+```bash
+slsbench harness \
+  -scenario-path ./scenarios/scenario-*.json \
+  -service-name myapp \
+  -docker-compose-path ./docker-compose.yml \
+  -port 8080 \
+  -result-path ./results
+```
 
-#### **GraalVM Native Image**
-- **Purpose:** Ahead-of-Time (AOT) compilation for native executables
-- **Why GraalVM:**
-  - The most widely used AOT compiler for Java
+### Getting Help
 
-### **Workload Generation & Testing**
+- Show general help: `slsbench help` or `slsbench`
+- Show command-specific help: `slsbench help <command>` or `slsbench <command> -help`
 
-#### **wrk2 - HTTP Load Testing**
-- **Purpose:** High-performance HTTP benchmarking tool
-- **Why wrk2:**
-  - Generates consistent, repeatable load patterns
-  - Low overhead for accurate performance measurements
-  - Supports custom Lua scripts for complex request patterns
-  - Provides detailed latency statistics and percentiles
-
-#### **Lua Scripting**
-- **Purpose:** Custom request generation and API testing
-- **Why Lua:**
-  - Lightweight scripting language with minimal overhead
-  - Excellent integration with wrk2 for dynamic request generation
-  - Easy to write and maintain test scenarios
-
-#### **OpenAPI Specification**
-- **Purpose:** API contract definition and request generation
-- **Why OpenAPI:**
-  - Standardized API documentation format
-  - Ensures consistent API testing across different frameworks
-
-### **Data Analysis & Visualization**
-
-#### **Python Ecosystem**
-- **Libraries:** pandas, matplotlib, numpy, jupyter
-- **Purpose:** Data analysis, visualization, and reporting
-- **Why Python:**
-  - Rich ecosystem for data analysis and scientific computing
-  - Excellent visualization capabilities with matplotlib
-  - Jupyter notebooks for interactive analysis and documentation
-  - pandas for efficient data manipulation and aggregation
-  - Easy integration with various data formats (CSV, JSON, etc.)
-
-#### **Jupyter Notebooks**
-- **Purpose:** Interactive data analysis and report generation
-- **Why Jupyter:**
-  - Combines code, analysis, and documentation in one environment
-  - Enables reproducible research and analysis
-  - Interactive visualization capabilities
-  - Support for multiple output formats (HTML, PDF, etc.)
-
-### **Build & Dependency Management**
-
-#### **Maven**
-- **Purpose:** Java project build and dependency management
-- **Why Maven:**
-  - Standard build tool for Java projects
-
-#### **Docker Multi-stage Builds**
-- **Purpose:** Optimized container image creation
-- **Why Multi-stage:**
-  - Reduces final image size by excluding build dependencies
-  - Enables different base images for build and runtime
-  - Supports both JVM and native compilation in same Dockerfile
-  - Improves security by minimizing attack surface
-  - Faster deployment due to smaller image sizes
-
-### **Monitoring & Observability**
-
-#### **Java Flight Recorder (JFR)**
-- **Purpose:** Low-overhead performance monitoring
-- **Why JFR:**
-  - Minimal performance impact on application execution
-  - Detailed insights into JVM behavior and performance
-  - Built-in support in modern JVMs and GraalVM
-  - Rich profiling data for analysis
-  - Standard tool for Java performance analysis
-
-### **Architecture Decisions**
-
-The technology choices reflect several key architectural principles:
-
-1. **Performance First:** Every technology is selected to minimize overhead and provide accurate measurements
-2. **Reproducibility:** Docker and standardized build processes ensure consistent results across environments
-3. **Extensibility:** Modular design allows easy addition of new frameworks and workloads
-4. **Industry Standards:** Use of widely-adopted tools and frameworks for broad applicability
+Examples:
+```bash
+slsbench help enrich
+slsbench scenario -help
+slsbench harness -help
+```

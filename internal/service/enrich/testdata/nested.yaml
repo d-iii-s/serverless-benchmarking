@@ -1,0 +1,43 @@
+openapi: 3.0.0
+info:
+  title: Nested Objects API
+  version: 1.0.0
+paths:
+  /api/users:
+    get:
+      summary: Get users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    x-slsbench-unique: true
+                    x-user-hint: uuid
+                  name:
+                    type: string
+                    x-slsbench-unique: false
+                    x-user-hint: name
+                  address:
+                    type: object
+                    properties:
+                      street:
+                        type: string
+                        x-slsbench-unique: false
+                        x-user-hint: string
+                      city:
+                        type: string
+                        x-slsbench-unique: false
+                        x-user-hint: string
+                      zipCode:
+                        type: string
+                        x-slsbench-unique: false
+                        x-user-hint: string
+                      country:
+                        type: string
+                        x-slsbench-unique: false
+                        x-user-hint: string

@@ -1,0 +1,153 @@
+package docker
+
+import (
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"github.com/d-iii-s/slsbench/internal/model"
+	"github.com/d-iii-s/slsbench/internal/utils"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/client"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+const WorkingDir string = "/wrktemp"
+const OutputDirContainer string = "/results"
+
+func CreateWorkloadContainerV2(ctx context.Context, cli *client.Client, imageName, serviceName, wrk2params, resultDir, scenarioPath string, port int) (container.CreateResponse, error) {
+	env := []string{}
+	if serviceName != "" {
+		env = append(env, fmt.Sprintf("SERVICE_NAME=%s", serviceName))
+	}
+	if wrk2params != "" {
+		env = append(env, fmt.Sprintf("WRK2PARAMS=%s", wrk2params))
+	}
+	if port > 0 {
+		env = append(env, fmt.Sprintf("PORT=%d", port))
+	}
+	env = append(env, fmt.Sprintf("OUTPUT_DIR=%s", WorkingDir+OutputDirContainer))
+
+	containerConfig := &container.Config{
+		Image: imageName,
+		//Cmd:   []string{"sh", "-c", "sleep infinity"},
+		Cmd: []string{"sh", "-c", fmt.Sprintf("cd %s; ./run_benchmark.sh", WorkingDir)},
+		Env: env,
+	}
+
+	hostConfig := &container.HostConfig{
+		Mounts: []mount.Mount{
+			{
+				Type:   mount.TypeBind,
+				Source: scenarioPath,
+				Target: WorkingDir + "/scenario.json",
+			},
+			{
+				Type:   mount.TypeBind,
+				Source: resultDir,
+				Target: WorkingDir + OutputDirContainer,
+			},
+		},
+	}
+	networkConfig := &network.NetworkingConfig{}
+	return cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, "")
+}
+
+func CollectContainerStats(ctx context.Context, cli *client.Client, containerId string, workingDir string) {
+	log.Println("Collecting container stats...")
+	statsResp, err := cli.ContainerStats(ctx, containerId, true)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer statsResp.Body.Close()
+	decoder := json.NewDecoder(statsResp.Body)
+	// create or open the CSV file
+	file, err := os.Create(filepath.Join(workingDir, "container-stats.csv"))
+	if err != nil {
+		log.Panic(err)
+	}
+	writer := csv.NewWriter(file)
+	defer file.Close()
+	// write header
+	//writer.Write([]string{"timestamp", "pid_count", "pid_count_Limit", "cpu_usage", "memory_usage", "rx_bytes", "tx_bytes"})
+	writer.Write([]string{"timestamp", "pid_count", "pid_count_Limit", "cpu_usage", "memory_usage"})
+	writer.Flush()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			var stats container.StatsResponse
+			// open file and do not close and write value to it on each stats arrived
+			if err := decoder.Decode(&stats); err != nil {
+				if err == io.EOF {
+					log.Println("Stream ended.")
+					return
+				}
+				log.Println("Decode error:", err)
+				continue
+			}
+
+			var PIDs = fmt.Sprintf("%d", stats.PidsStats.Current)
+			var PIDsLimit = fmt.Sprintf("%d", stats.PidsStats.Limit)
+			var cpuUsage = fmt.Sprintf("%d", stats.CPUStats.CPUUsage.TotalUsage)
+			var memoryUsage = fmt.Sprintf("%d", stats.MemoryStats.Usage)
+			//var rxBytes = fmt.Sprintf("%d", firstNetwork(stats).RxBytes)
+			//var txBytes = fmt.Sprintf("%d", firstNetwork(stats).TxBytes)
+			//err := writer.Write([]string{time.Now().String(), PIDs, PIDsLimit, cpuUsage, memoryUsage, rxBytes, txBytes})
+			err := writer.Write([]string{time.Now().String(), PIDs, PIDsLimit, cpuUsage, memoryUsage})
+			if err != nil {
+				log.Println("Error creating csv:", err)
+			}
+			writer.Flush()
+		}
+	}
+}
+
+// https://quarkus.io/guides/performance-measure#measuring-memory-correctly-on-docker
+func MeasureRSS(ctx context.Context, cli *client.Client, containerID, workdir string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	var allSnapshots []model.Snapshot
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Context cancelled, stopping monitoring.")
+			return
+
+		case <-ticker.C:
+			top, err := cli.ContainerTop(ctx, containerID, []string{"-o", "pid,rss,args"})
+			if err != nil {
+				log.Println("Error fetching top:", err)
+				continue
+			}
+
+			snapshot := model.Snapshot{
+				Timestamp: time.Now(),
+				Processes: []model.ProcessInfo{},
+			}
+
+			for _, proc := range top.Processes {
+				if len(proc) >= 3 {
+					snapshot.Processes = append(snapshot.Processes, model.ProcessInfo{
+						PID:  proc[0],
+						RSS:  proc[1],
+						Args: proc[2],
+					})
+				}
+			}
+
+			allSnapshots = append(allSnapshots, snapshot)
+
+			// Save after every new snapshot
+			utils.SaveData(allSnapshots, filepath.Join(workdir, "rss_info.json"))
+		}
+	}
+}
