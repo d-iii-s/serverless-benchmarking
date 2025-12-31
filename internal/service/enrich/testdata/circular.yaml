@@ -1,0 +1,31 @@
+openapi: 3.0.0
+info:
+  title: Circular Reference API
+  version: 1.0.0
+paths:
+  /api/users:
+    get:
+      summary: Get users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          x-slsbench-unique: true
+          x-user-hint: uuid
+        name:
+          type: string
+          x-slsbench-unique: false
+          x-user-hint: name
+        parent:
+          $ref: '#/components/schemas/User'
+

@@ -1,0 +1,42 @@
+openapi: 3.0.0
+info:
+  title: All Parameter Types API
+  version: 1.0.0
+paths:
+  /api/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: Get user with all parameter types
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: X-Request-ID
+          in: header
+          schema:
+            type: string
+        - name: sessionId
+          in: cookie
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+

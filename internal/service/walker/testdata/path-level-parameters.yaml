@@ -1,0 +1,28 @@
+openapi: 3.0.0
+info:
+  title: Path Level Parameters API
+  version: 1.0.0
+paths:
+  /api/vets/{vetId}:
+    parameters:
+      - name: vetId
+        in: path
+        required: true
+        schema:
+          type: integer
+    get:
+      summary: Get a vet by ID
+      operationId: getVet
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+

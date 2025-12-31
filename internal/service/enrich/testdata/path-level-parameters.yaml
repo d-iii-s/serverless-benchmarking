@@ -1,0 +1,34 @@
+openapi: 3.0.0
+info:
+  title: Path Level Parameters API
+  version: 1.0.0
+paths:
+  /api/vets/{vetId}:
+    parameters:
+      - name: vetId
+        in: path
+        required: true
+        schema:
+          type: integer
+          x-slsbench-unique: true
+          x-user-hint: uuid
+    get:
+      summary: Get a vet by ID
+      operationId: getVet
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    x-slsbench-unique: true
+                    x-user-hint: uuid
+                  name:
+                    type: string
+                    x-slsbench-unique: false
+                    x-user-hint: name
+

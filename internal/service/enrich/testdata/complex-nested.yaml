@@ -1,0 +1,59 @@
+openapi: 3.0.0
+info:
+  title: Complex Nested API
+  version: 1.0.0
+paths:
+  /api/users:
+    get:
+      summary: Get users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    type: object
+                    properties:
+                      profile:
+                        type: object
+                        properties:
+                          personal:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                                x-slsbench-unique: false
+                                x-user-hint: name
+                              age:
+                                type: integer
+                                x-slsbench-unique: false
+                                x-user-hint: integer
+                          contact:
+                            type: object
+                            properties:
+                              email:
+                                type: string
+                                x-slsbench-unique: false
+                                x-user-hint: email
+                              phone:
+                                type: string
+                                x-slsbench-unique: false
+                                x-user-hint: phone_number
+                      settings:
+                        type: object
+                        properties:
+                          preferences:
+                            type: object
+                            properties:
+                              theme:
+                                type: string
+                                x-slsbench-unique: false
+                                x-user-hint: string
+                              language:
+                                type: string
+                                x-slsbench-unique: false
+                                x-user-hint: string
+

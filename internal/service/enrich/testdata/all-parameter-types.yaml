@@ -1,0 +1,53 @@
+openapi: 3.0.0
+info:
+  title: All Parameter Types API
+  version: 1.0.0
+paths:
+  /api/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+          x-slsbench-unique: true
+          x-user-hint: uuid
+    get:
+      summary: Get user with all parameter types
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            x-user-hint: integer
+            x-slsbench-unique: false
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            x-user-hint: integer
+            x-slsbench-unique: false
+        - name: X-Request-ID
+          in: header
+          schema:
+            type: string
+            x-slsbench-unique: false
+            x-user-hint: string
+        - name: sessionId
+          in: cookie
+          schema:
+            type: string
+            x-slsbench-unique: false
+            x-user-hint: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    x-slsbench-unique: false
+                    x-uiser-hint: uuid
