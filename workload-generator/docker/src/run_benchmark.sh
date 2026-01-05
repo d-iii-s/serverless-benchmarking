@@ -40,7 +40,7 @@ echo ""
 echo -e "${YELLOW}[Step 1/2] Measuring time to first successful request...${NC}"
 echo ""
 
-if ! lua measure_first_request.lua; then
+if ! DEBUG=1 lua measure_first_request.lua; then
     echo -e "${RED}Error: measure_first_request.lua failed${NC}"
     exit 1
 fi
