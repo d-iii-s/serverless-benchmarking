@@ -54,9 +54,11 @@ This command orchestrates the benchmark execution by:
 - Starting the service using Docker Compose
 - Running workload tests using wrk2
 - Collecting performance metrics
+- Copying specified paths from the service container to results
 - Cleaning up resources`,
 	Example: `  slsbench harness -scenario-path ./scenario.json -service-name myapp -port 8080
-  slsbench harness -scenario-path ./scenario.json -service-name myapp -wrk2params "-t4 -c200 -d60s -R5000"`,
+  slsbench harness -scenario-path ./scenario.json -service-name myapp -wrk2params "-t4 -c200 -d60s -R5000"
+  slsbench harness -s ./scenario.json -n myapp -c /var/log/app,/tmp/metrics`,
 	RunE: runHarness,
 }
 
@@ -76,6 +78,7 @@ var (
 	harnessResultPath        string
 	harnessDockerComposePath string
 	harnessServiceName       string
+	harnessCollectPaths      []string
 )
 
 func init() {
@@ -97,6 +100,7 @@ func init() {
 	harnessCmd.Flags().StringVarP(&harnessDockerComposePath, "docker-compose-path", "d", "./docker-compose.yml", "Path to the docker-compose.yml file")
 	harnessCmd.Flags().StringVarP(&harnessServiceName, "service-name", "n", "", "Service name in the docker-compose file to benchmark (required)")
 	harnessCmd.MarkFlagRequired("service-name")
+	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
 
 	// Add subcommands to root
 	rootCmd.AddCommand(enrichCmd)
@@ -154,7 +158,10 @@ func runHarness(cmd *cobra.Command, args []string) error {
 
 	log.Printf("Running harness: scenario=%s wrk2=%s result=%s docker-compose=%s port=%d service=%s",
 		harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessPort, harnessServiceName)
+	if len(harnessCollectPaths) > 0 {
+		log.Printf("Will collect paths from service container: %v", harnessCollectPaths)
+	}
 
-	harness.Run(ctx, harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort)
+	harness.Run(ctx, harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths)
 	return nil
 }

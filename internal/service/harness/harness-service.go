@@ -62,7 +62,7 @@ func (e EventProcessor) Done(operation string, success bool) {
 	}
 }
 
-func Run(ctx context.Context, scenarioPath, wrk2params, resultPath, dockerComposePath, serviceName string, port int) {
+func Run(ctx context.Context, scenarioPath, wrk2params, resultPath, dockerComposePath, serviceName string, port int, collectPaths []string) {
 	// work dir on local machine
 	workdirPath := createWorkdir(resultPath)
 
@@ -176,6 +176,22 @@ func Run(ctx context.Context, scenarioPath, wrk2params, resultPath, dockerCompos
 		}
 	}
 	time.Sleep(2 * time.Second) // wait for a while to collect final stats
+
+	// Copy specified paths from service container to results
+	if len(collectPaths) > 0 {
+		log.Printf("Collecting %d path(s) from service container...", len(collectPaths))
+		for _, containerPath := range collectPaths {
+			if containerPath == "" {
+				continue
+			}
+			log.Printf("Copying %s from container to results...", containerPath)
+			if err := docker.CopyFromContainer(ctx, cli, serviceContainerID, containerPath, workdirPath); err != nil {
+				log.Printf("Warning: Failed to copy %s: %v", containerPath, err)
+			} else {
+				log.Printf("Successfully copied %s to results", containerPath)
+			}
+		}
+	}
 }
 
 func startWorkloadContainer(ctx context.Context, cli *client.Client, workloadContainerResponse container.CreateResponse) {

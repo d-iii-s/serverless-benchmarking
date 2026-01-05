@@ -216,6 +216,7 @@ slsbench harness \
 - `-p, --port`: Port number for the service (default: `8080`)
 - `-r, --result-path`: Directory to save benchmark results (default: `./result`)
 - `-w, --wrk2params`: wrk2 parameters (default: `-t2 -c100 -d30s -R2000`)
+- `-c, --collect-paths`: Paths inside the service container to copy to results (comma-separated)
 
 #### What It Does
 
@@ -227,6 +228,7 @@ slsbench harness \
    - Container statistics (CPU, memory)
    - RSS (Resident Set Size) information
    - First request latency
+6. Copies specified paths from the service container to results (if `--collect-paths` is used)
    - wrk2 benchmark results
 6. Saves all results to the specified directory
 7. Cleans up containers and networks
@@ -257,7 +259,39 @@ slsbench harness \
   -p 8080 \
   -w "-t4 -c200 -d60s -R5000" \
   -r ./benchmark-results
+
+# Run benchmark and collect logs/metrics from the service container
+slsbench harness \
+  -s ./scenarios/scenario-2025-01-15-14:35:12.json \
+  -n myapp \
+  -p 8080 \
+  -c /var/log/app,/tmp/metrics,/app/logs
 ```
+
+#### Collecting Files from Service Container
+
+Use the `--collect-paths` (`-c`) flag to copy files or directories from the service container to your results folder after the benchmark completes. This is useful for:
+
+- Application logs
+- JFR (Java Flight Recorder) recordings
+- Custom metrics files
+- Debug output
+- Profiling data
+
+The paths are comma-separated and should be absolute paths inside the container:
+
+```bash
+# Collect application logs
+slsbench harness -n myapp -c /var/log/app
+
+# Collect multiple paths
+slsbench harness -n myapp -c /var/log/app,/tmp/metrics,/app/profiling
+
+# Collect JFR recordings
+slsbench harness -n myapp -c /tmp/recording.jfr
+```
+
+Collected files are saved in a `collected/` subdirectory within the results folder.
 
 #### Output
 
@@ -268,6 +302,7 @@ Results are saved in a timestamped directory:
   - `rss_info.json`: Memory usage information
   - `first_request_result.json`: First request latency data
   - `wrk2_results_*.txt`: Detailed wrk2 benchmark output
+  - `collected/`: Files copied from the service container (if `--collect-paths` was used)
 
 ### Complete Workflow Example
 

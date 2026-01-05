@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -108,6 +110,100 @@ func CollectContainerStats(ctx context.Context, cli *client.Client, containerId 
 			writer.Flush()
 		}
 	}
+}
+
+// CopyFromContainer copies a file or directory from a container to the host filesystem.
+// containerPath is the path inside the container to copy from.
+// destPath is the directory on the host where the files will be extracted.
+func CopyFromContainer(ctx context.Context, cli *client.Client, containerID, containerPath, destPath string) error {
+	// Get the content from the container as a tar stream
+	reader, stat, err := cli.CopyFromContainer(ctx, containerID, containerPath)
+	if err != nil {
+		return fmt.Errorf("failed to copy from container: %w", err)
+	}
+	defer reader.Close()
+
+	// Create a subdirectory in destPath based on the container path
+	// to avoid overwriting existing files
+	baseName := filepath.Base(containerPath)
+	if stat.Name != "" {
+		baseName = stat.Name
+	}
+
+	// Create "collected" subdirectory to organize collected files
+	collectedDir := filepath.Join(destPath, "collected")
+	if err := os.MkdirAll(collectedDir, 0755); err != nil {
+		return fmt.Errorf("failed to create collected directory: %w", err)
+	}
+
+	// Extract the tar archive
+	tarReader := tar.NewReader(reader)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+
+		// Determine the target path
+		// Remove leading slash and use the base name as prefix
+		cleanName := strings.TrimPrefix(header.Name, "/")
+		targetPath := filepath.Join(collectedDir, cleanName)
+
+		// Ensure the target path is within the destination directory (security check)
+		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(collectedDir)) {
+			log.Printf("Warning: skipping potentially unsafe path: %s", header.Name)
+			continue
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			// Create directory
+			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", targetPath, err)
+			}
+
+		case tar.TypeReg:
+			// Create parent directories if needed
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directories for %s: %w", targetPath, err)
+			}
+
+			// Create and write file
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return fmt.Errorf("failed to create file %s: %w", targetPath, err)
+			}
+
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to write file %s: %w", targetPath, err)
+			}
+			outFile.Close()
+
+			// Set file permissions
+			if err := os.Chmod(targetPath, os.FileMode(header.Mode)); err != nil {
+				log.Printf("Warning: failed to set permissions on %s: %v", targetPath, err)
+			}
+
+		case tar.TypeSymlink:
+			// Create symlink
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directories for symlink %s: %w", targetPath, err)
+			}
+			if err := os.Symlink(header.Linkname, targetPath); err != nil {
+				log.Printf("Warning: failed to create symlink %s: %v", targetPath, err)
+			}
+
+		default:
+			log.Printf("Warning: unsupported file type for %s (type: %c)", header.Name, header.Typeflag)
+		}
+	}
+
+	log.Printf("Extracted %s to %s", baseName, collectedDir)
+	return nil
 }
 
 // https://quarkus.io/guides/performance-measure#measuring-memory-correctly-on-docker
