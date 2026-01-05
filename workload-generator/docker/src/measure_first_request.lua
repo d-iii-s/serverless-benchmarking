@@ -125,7 +125,15 @@ local function make_request(method, url, headers, body, timeout, attempt_num)
     
     debug_print(string.format("Request #%d: %s %s (timeout: %.3fs)", attempt_num, method, url, timeout))
     if body and body ~= "" then
-        debug_print(string.format("Request #%d body length: %d bytes", attempt_num, #body))
+        debug_print(string.format("Request #%d request_body length: %d bytes", attempt_num, #body))
+        -- Log request body content (truncated if too long)
+        if #body > 500 then
+            debug_print(string.format("Request #%d request_body (truncated): %s...", attempt_num, body:sub(1, 500)))
+        else
+            debug_print(string.format("Request #%d request_body: %s", attempt_num, body))
+        end
+    else
+        debug_print(string.format("Request #%d request_body: (none)", attempt_num))
     end
     
     local start_time = socket.gettime()
@@ -154,6 +162,16 @@ local function make_request(method, url, headers, body, timeout, attempt_num)
             attempt_num, tostring(status_code), tostring(status_line), #body_text))
         if response_headers then
             debug_table(string.format("Request #%d response_headers", attempt_num), response_headers)
+        end
+        -- Log response body (truncated if too long)
+        if body_text and #body_text > 0 then
+            if #body_text > 500 then
+                debug_print(string.format("Request #%d response_body (truncated): %s...", attempt_num, body_text:sub(1, 500)))
+            else
+                debug_print(string.format("Request #%d response_body: %s", attempt_num, body_text))
+            end
+        else
+            debug_print(string.format("Request #%d response_body: (empty)", attempt_num))
         end
         return status_code, response_headers, body_text, request_time
     else
