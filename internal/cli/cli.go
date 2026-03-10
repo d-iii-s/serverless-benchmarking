@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
-	"github.com/d-iii-s/slsbench/internal/model"
-	enricher "github.com/d-iii-s/slsbench/internal/service/enrich"
+	"github.com/d-iii-s/slsbench/internal/service/dslvalidator"
 	"github.com/d-iii-s/slsbench/internal/service/harness"
-	scenario_builder "github.com/d-iii-s/slsbench/internal/service/scenario-builder"
 	"github.com/d-iii-s/slsbench/internal/utils"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var rootCmd = &cobra.Command{
@@ -21,28 +19,15 @@ var rootCmd = &cobra.Command{
 	Long:  `Serverless Benchmarking Tool - A comprehensive framework for evaluating the performance of serverless and containerized Java workloads.`,
 }
 
-var enrichCmd = &cobra.Command{
-	Use:   "enrich",
-	Short: "Enrich an OpenAPI specification file with additional metadata",
-	Long: `Enrich an OpenAPI specification file with additional metadata.
+var validateDslCmd = &cobra.Command{
+	Use:   "validate-dsl",
+	Short: "Validate a DSL YAML file against the built-in JSON Schema",
+	Long: `Validate a DSL YAML file against the built-in JSON Schema.
 
-This command processes an OpenAPI specification file and adds additional metadata
-that is required for generating benchmark scenarios.`,
-	Example: `  slsbench enrich -specification-path ./api.yaml -output-path ./enriched
-  slsbench enrich -specification-path ./api.yaml`,
-	RunE: runEnrich,
-}
-
-var scenarioCmd = &cobra.Command{
-	Use:   "scenario",
-	Short: "Generate a scenario file from an enriched OpenAPI specification",
-	Long: `Generate a scenario file from an enriched OpenAPI specification.
-
-This command takes an enriched OpenAPI specification and generates a scenario file
-that can be used with the harness command to run benchmarks.`,
-	Example: `  slsbench scenario -enriched-specification-path ./enriched-spec.yaml -output-path ./scenarios
-  slsbench scenario -enriched-specification-path ./enriched-spec.yaml`,
-	RunE: runScenario,
+This command reads a DSL definition from a YAML file and validates it
+against the built-in DSL JSON Schema. It prints a human-readable result
+and exits with code 0 on success, 1 on validation error.`,
+	RunE: runValidateDSL,
 }
 
 var harnessCmd = &cobra.Command{
@@ -63,14 +48,6 @@ This command orchestrates the benchmark execution by:
 }
 
 var (
-	// Enrich flags
-	enrichSpecificationPath string
-	enrichOutputPath        string
-
-	// Scenario flags
-	scenarioEnrichedSpecPath string
-	scenarioOutputPath       string
-
 	// Harness flags
 	harnessScenarioPath      string
 	harnessWrk2Params        string
@@ -79,18 +56,15 @@ var (
 	harnessDockerComposePath string
 	harnessServiceName       string
 	harnessCollectPaths      []string
+
+	// Validate DSL flags
+	validateDSLPath string
 )
 
 func init() {
-	// Enrich command flags
-	enrichCmd.Flags().StringVarP(&enrichSpecificationPath, "specification-path", "s", "", "Path to the OpenAPI specification file to enrich (required)")
-	enrichCmd.MarkFlagRequired("specification-path")
-	enrichCmd.Flags().StringVarP(&enrichOutputPath, "output-path", "o", "./enriched-spec.yaml", "Path to save the enriched OpenAPI specification file")
-
-	// Scenario command flags
-	scenarioCmd.Flags().StringVarP(&scenarioEnrichedSpecPath, "enriched-specification-path", "s", "", "Path to the OpenAPI Enriched Specification file (required)")
-	scenarioCmd.MarkFlagRequired("enriched-specification-path")
-	scenarioCmd.Flags().StringVarP(&scenarioOutputPath, "output-path", "o", "./scenario.json", "Path to save the generated scenario file")
+	// Validate DSL command flags
+	validateDslCmd.Flags().StringVarP(&validateDSLPath, "dsl-path", "d", "", "Path to the DSL YAML file to validate (required)")
+	validateDslCmd.MarkFlagRequired("dsl-path")
 
 	// Harness command flags
 	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "./scenario.json", "Path to the scenario file")
@@ -103,8 +77,7 @@ func init() {
 	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
 
 	// Add subcommands to root
-	rootCmd.AddCommand(enrichCmd)
-	rootCmd.AddCommand(scenarioCmd)
+	rootCmd.AddCommand(validateDslCmd)
 	rootCmd.AddCommand(harnessCmd)
 }
 
@@ -114,38 +87,30 @@ func Execute() {
 	}
 }
 
-func runEnrich(cmd *cobra.Command, args []string) error {
+func runValidateDSL(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
-	log.Println("Enriching specification:", enrichSpecificationPath)
+	log.Println("Validating DSL file:", validateDSLPath)
 
-	specification := utils.OpenOpenApiSpecFile(ctx, enrichSpecificationPath)
-	enrichProcessor := enricher.NewEnrichProcessor(specification, nil)
-	enrichProcessor.SetHints()
-
-	outputFile := enrichOutputPath + fmt.Sprintf("/enriched-spec-%s.yaml", time.Now().Format("2006-01-02-15:04:05"))
-	err := utils.SaveYAML(outputFile, enrichProcessor.GetSpec())
+	file, err := os.Open(validateDSLPath)
 	if err != nil {
-		return fmt.Errorf("failed to save enriched specification: %w", err)
+		return fmt.Errorf("failed to open DSL file %q: %w", validateDSLPath, err)
+	}
+	defer file.Close()
+
+	var doc any
+	decoder := yaml.NewDecoder(file)
+	if err := decoder.Decode(&doc); err != nil {
+		return fmt.Errorf("failed to parse DSL YAML %q: %w", validateDSLPath, err)
 	}
 
-	log.Printf("Enriched specification saved to: %s", outputFile)
-	return nil
-}
-
-func runScenario(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-	log.Println("Generating scenario from specification:", scenarioEnrichedSpecPath)
-
-	specification := utils.OpenOpenApiSpecFile(ctx, scenarioEnrichedSpecPath)
-	scenario := scenario_builder.CreateScenarioFromSpecPath(ctx, specification, nil)
-
-	outputFile := scenarioOutputPath + fmt.Sprintf("/scenario-%s.json", time.Now().Format("2006-01-02-15:04:05"))
-	err := model.SerializeScenarioGraph(scenario, outputFile)
-	if err != nil {
-		return fmt.Errorf("failed to save scenario: %w", err)
+	if err := dslvalidator.ValidateDSL(ctx, doc); err != nil {
+		// Try to pretty-print jsonschema validation errors if possible.
+		log.Printf("DSL validation failed for %s", validateDSLPath)
+		utils.PrintJSON(err)
+		return fmt.Errorf("DSL validation failed: %w", err)
 	}
 
-	log.Printf("Scenario saved to: %s", outputFile)
+	log.Printf("DSL validation passed for %s", validateDSLPath)
 	return nil
 }
 

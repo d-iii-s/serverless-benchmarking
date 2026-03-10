@@ -1,0 +1,87 @@
+{
+  "title": "Slsbench DSL",
+  "type": "object",
+  "properties": {
+    "stages": {
+      "type": "object",
+      "description": "Collection of benchmark stages keyed by stage name",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "wrk2params": {
+            "type": "string",
+            "description": "wrk2 parameters for this stage"
+          },
+          "dataGenerationWeight": {
+            "type": "number",
+            "description": "Relative weight for data generation in this stage"
+          },
+          "flow": {
+            "type": "array",
+            "description": "Sequence of nodes participating in this stage",
+            "items": {
+              "type": "object",
+              "properties": {
+                "endpoint": {
+                  "type": "string",
+                  "description": "HTTP endpoint path, e.g. /api/v1/users"
+                },
+                "method": {
+                  "type": "string",
+                  "description": "HTTP method",
+                  "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+                },
+                "edges": {
+                  "type": "array",
+                  "description": "Outgoing edges from this node",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "to": {
+                        "type": "string",
+                        "description": "Target node identifier"
+                      },
+                      "weight": {
+                        "type": "number",
+                        "description": "Relative probability/weight of taking this edge"
+                      },
+                      "mappings": {
+                        "type": "array",
+                        "description": "Field mappings from source to destination",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source": {
+                              "type": "string",
+                              "description": "Source field path, e.g. body.username"
+                            },
+                            "destination": {
+                              "type": "string",
+                              "description": "Destination field path, e.g. path.username"
+                            }
+                          },
+                          "required": ["source", "destination"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": ["to"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": ["endpoint", "method"],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": ["wrk2params", "dataGenerationWeight", "flow"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["stages"],
+  "additionalProperties": false
+}
+
+

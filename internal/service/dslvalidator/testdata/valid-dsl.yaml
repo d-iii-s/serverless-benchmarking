@@ -1,0 +1,43 @@
+stages:
+  stage1:
+    wrk2params: -t2 -c100 -d30s -R2000
+    dataGenerationWeight: 0.5
+    flow:
+      - node1:
+        endpoint: /api/v1/users
+        method: POST
+        edges:
+          - to: node2
+            weight: 0.3
+            mappings:
+              - source: body.username
+                destination: path.username
+          - to: node3
+            weight: 0.7
+            mappings:
+              - source: body.username
+                destination: path.username
+      - node2:
+        endpoint: /api/v1/users/{id}
+        method: GET
+      - node3:
+        endpoint: /api/v2/users/{id}
+        method: GET
+  stage2:
+    wrk2params: -t2 -c100 -d30s -R2000
+    dataGenerationWeight: 0.3
+    flow:
+      - node1:
+        endpoint: /api/v1/users
+        method: POST
+        edges:
+          - to: node2
+            weight: 0.7
+            mappings:
+              - source: body.username
+                destination: path.username
+              - source: body.email
+                destination: body.email
+      - node2:
+        endpoint: /api/v1/users/{id}
+        method: GET

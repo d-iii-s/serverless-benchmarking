@@ -17,7 +17,6 @@ function pair(x, y)
     return x * (x + y + 1) + y
 end
 
--- todo: delete question about uniqness - by deafault all unique
 local function generate_fake_data(hint, field_type, format, thread_id, conn_id, unique_values_generated, min, max, pattern, minLength, maxLength)
     -- Generate a more unique seed by combining multiple entropy sources
     local salt = math.random(1, 2147483647)
