@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+// todo: generate_bodies should take instruction in which order generate bodies.
+
 // scriptRelPath is the path from the project root to the Python helper script.
 const scriptRelPath = "scripts/generate_bodies.py"
 
@@ -49,6 +51,13 @@ func GenerateRequestBodies(ctx context.Context, specPath, endpoint, method strin
 	}
 
 	cmd := exec.CommandContext(ctx, "python3", args...)
+	/*
+		we should compute map endpoint -> number of bodies
+		mount value structure:
+		/stage1
+		DSL: would be -> endpoint -> endpoint
+
+	*/
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("generate_bodies.py failed (exit %v): %s", err, string(output))
@@ -91,4 +100,3 @@ func resolveScriptPath() (string, error) {
 
 	return "", fmt.Errorf("could not find %s in any known location", scriptRelPath)
 }
-

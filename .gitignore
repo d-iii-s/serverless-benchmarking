@@ -7,3 +7,4 @@ workdir/
 build/
 scripts/.hypothesis/
 internal/service/datagen/.hypothesis/
+.hypothesis/

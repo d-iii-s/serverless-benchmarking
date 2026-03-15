@@ -56,19 +56,31 @@ def main():
 
     # Find the matching operation.
     # get_all_operations() yields Result-wrapped objects; unwrap via .ok().
-    strategy = None
+    operation = None
     for result in schema.get_all_operations():
-        operation = result.ok()
-        if operation.path == args.endpoint and operation.method.upper() == method:
-            strategy = operation.as_strategy()
+        op = result.ok()
+        if op.path == args.endpoint and op.method.upper() == method:
+            operation = op
             break
 
-    if strategy is None:
+    if operation is None:
         print(
             f"Error: no operation found for {method} {args.endpoint}",
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # Guard: only accept application/json request bodies.
+    content_types = operation.get_request_payload_content_types()
+    if content_types and "application/json" not in content_types:
+        print(
+            f"Error: operation {method} {args.endpoint} does not support "
+            f"application/json request body (available: {content_types})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    strategy = operation.as_strategy()
 
     # Collect generated bodies
     bodies = []
