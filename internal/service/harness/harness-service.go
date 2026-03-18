@@ -4,15 +4,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/d-iii-s/slsbench/internal/service/docker"
-	"github.com/d-iii-s/slsbench/internal/utils"
+	"github.com/d-iii-s/slsbench/internal/service/datagen"
+	"github.com/d-iii-s/slsbench/internal/service/flowgen"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
 	"github.com/docker/compose/v5/pkg/compose"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"log"
 	"os"
@@ -62,10 +61,8 @@ func (e EventProcessor) Done(operation string, success bool) {
 	}
 }
 
-func Run(ctx context.Context, scenarioPath, wrk2params, resultPath, dockerComposePath, serviceName string, port int, collectPaths []string) {
-	// work dir on local machine
-	workdirPath := createWorkdir(resultPath)
-
+func setupDockerCompose() api.Compose {
+	// setup docker client
 	dockerCLI, err := command.NewDockerCli()
 	if err != nil {
 		log.Panicf("Error creating docker CLI: %v", err)
@@ -75,123 +72,139 @@ func Run(ctx context.Context, scenarioPath, wrk2params, resultPath, dockerCompos
 		log.Fatalf("Failed to initialize docker CLI: %v", err)
 	}
 
-	// new compose service instance
-	service, err := compose.NewComposeService(dockerCLI, compose.WithEventProcessor(newEventProcessor()))
+	// compose client
+	compose, err := compose.NewComposeService(dockerCLI, compose.WithEventProcessor(newEventProcessor()))
 	if err != nil {
-		log.Panicf("Error creating compose service: %v", err)
+		log.Panicf("Error creating compose composeService: %v", err)
 	}
 
-	// load the compose project from a compose file
-	project, err := service.LoadProject(ctx, api.ProjectLoadOptions{
-		ConfigPaths: []string{dockerComposePath},
-		ProjectName: fmt.Sprintf("benchmarking-application-%d", time.Now().Unix()),
-	})
-	if err != nil {
-		log.Fatalf("Failed to load project: %v", err)
+	return compose
+}
+
+func Run(ctx context.Context, scenarioPath, resultPath, dockerComposePath, serviceName string, port int, collectPaths []string, specPath string) {
+	// work dir on local machine
+	workdirPath := createWorkdir(resultPath)
+
+	if err := flowgen.GenerateFlowBodies(ctx, scenarioPath, specPath, workdirPath, datagen.GenerateRequestBodies); err != nil {
+		log.Panicf("Error generating flow bodies: %v", err)
 	}
 
-	// Create Docker client early so we can create workload container
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Panicf("Error creating docker client: %v", err)
-	}
+	/*
+		// setup compose
+		compose := setupDockerCompose()
 
-	// Create workload container before starting services
-	workloadContainerResponse, err := docker.CreateWorkloadContainerV2(ctx, cli, utils.DefaultWorkloadGeneratorImage,
-		serviceName, wrk2params, workdirPath, scenarioPath, port)
-	if err != nil {
-		log.Panicf("Error creating workload container: %v", err)
-	}
-	log.Printf("Created workload container: %s", workloadContainerResponse.ID)
-
-	// ------------------------------------------------------------
-	// CLEAR RESOURCES
-	// ------------------------------------------------------------
-	defer clearResources(ctx, err, cli, workloadContainerResponse, service, project)
-
-	// Create networks and containers (but don't start them yet)
-	// This ensures the network exists so we can connect the workload container
-	err = service.Create(ctx, project, api.CreateOptions{})
-	if err != nil {
-		log.Fatalf("Failed to create services: %v", err)
-	}
-	log.Printf("Created project resources: %s", project.Name)
-
-	// Connect workload container to the project's network
-	// First, try to get network name from Docker Compose file
-	networkName := getNetworkName(project)
-
-	// If no network name found in compose file, fall back to default naming pattern
-	if networkName == "" {
-		networkName = fmt.Sprintf("%s_default", project.Name)
-	}
-
-	networkInfo, err := cli.NetworkInspect(ctx, networkName, network.InspectOptions{})
-	if err != nil {
-		log.Panicf("Error inspecting network %s: %v", networkName, err)
-	}
-
-	err = cli.NetworkConnect(ctx, networkInfo.ID, workloadContainerResponse.ID, nil)
-	if err != nil {
-		log.Panicf("Error connecting container to network: %v", err)
-	}
-	log.Printf("Successfully connected workload container to network: %s", networkName)
-
-	go startWorkloadContainer(context.Background(), cli, workloadContainerResponse)
-
-	// Now start the services
-	err = service.Start(ctx, project.Name, api.StartOptions{
-		Project: project,
-	})
-	if err != nil {
-		log.Fatalf("Failed to start services: %v", err)
-	}
-	log.Printf("Successfully started project: %s", project.Name)
-
-	// Find container ID of the service
-	serviceContainerID, err := findContainerIDByServiceName(ctx, cli, project.Name, serviceName)
-	if err != nil {
-		log.Panicf("Error finding container for service %s: %v", serviceName, err)
-	}
-	log.Printf("Found container ID for service %s: %s", serviceName, serviceContainerID)
-
-	go docker.CollectContainerStats(context.Background(), cli, serviceContainerID, workdirPath)
-	go docker.MeasureRSS(context.Background(), cli, serviceContainerID, workdirPath)
-
-	// Wait for the workload container to finish
-	statusCh, errCh := cli.ContainerWait(ctx, workloadContainerResponse.ID, container.WaitConditionNotRunning)
-	select {
-	case err := <-errCh:
+		// load the compose project from a compose file
+		project, err := compose.LoadProject(ctx, api.ProjectLoadOptions{
+			ConfigPaths: []string{dockerComposePath},
+			ProjectName: fmt.Sprintf("benchmarking-application-%d", time.Now().Unix()),
+		})
 		if err != nil {
-			log.Panicf("Error waiting for workload container: %v", err)
+			log.Fatalf("Failed to load project: %v", err)
 		}
-	case status := <-statusCh:
-		if status.Error != nil {
-			log.Panicf("Error in workload container: %v", status.Error.Message)
-		}
-		if status.StatusCode != 0 {
-			log.Printf("Workload container exited with status code: %d", status.StatusCode)
-		} else {
-			log.Println("Workload container finished successfully")
-		}
-	}
-	time.Sleep(2 * time.Second) // wait for a while to collect final stats
 
-	// Copy specified paths from service container to results
-	if len(collectPaths) > 0 {
-		log.Printf("Collecting %d path(s) from service container...", len(collectPaths))
-		for _, containerPath := range collectPaths {
-			if containerPath == "" {
-				continue
+		// Create Docker client early so we can create workload container
+		dockerCli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		if err != nil {
+			log.Panicf("Error creating docker client: %v", err)
+		}
+
+		// Create workload container before starting services
+		workloadContainerResponse, err := docker.CreateWorkloadContainerV2(ctx, dockerCli, utils.DefaultWorkloadGeneratorImage,
+			serviceName, wrk2params, workdirPath, scenarioPath, port)
+		if err != nil {
+			log.Panicf("Error creating workload container: %v", err)
+		}
+		log.Printf("Created workload container: %s", workloadContainerResponse.ID)
+
+		// ------------------------------------------------------------
+		// CLEAR RESOURCES
+		// ------------------------------------------------------------
+		defer clearResources(ctx, err, dockerCli, workloadContainerResponse, compose, project)
+
+		// Create networks and containers (but don't start them yet)
+		// This ensures the network exists so we can connect the workload container
+		err = compose.Create(ctx, project, api.CreateOptions{})
+		if err != nil {
+			log.Fatalf("Failed to create services: %v", err)
+		}
+		log.Printf("Created project resources: %s", project.Name)
+
+		// Connect workload container to the project's network
+		// First, try to get network name from Docker Compose file
+		networkName := getNetworkName(project)
+
+		// If no network name found in compose file, fall back to default naming pattern
+		if networkName == "" {
+			networkName = fmt.Sprintf("%s_default", project.Name)
+		}
+
+		networkInfo, err := dockerCli.NetworkInspect(ctx, networkName, network.InspectOptions{})
+		if err != nil {
+			log.Panicf("Error inspecting network %s: %v", networkName, err)
+		}
+
+		err = dockerCli.NetworkConnect(ctx, networkInfo.ID, workloadContainerResponse.ID, nil)
+		if err != nil {
+			log.Panicf("Error connecting container to network: %v", err)
+		}
+		log.Printf("Successfully connected workload container to network: %s", networkName)
+
+		go startWorkloadContainer(context.Background(), dockerCli, workloadContainerResponse)
+
+		// Now start the services
+		err = compose.Start(ctx, project.Name, api.StartOptions{
+			Project: project,
+		})
+		if err != nil {
+			log.Fatalf("Failed to start services: %v", err)
+		}
+		log.Printf("Successfully started project: %s", project.Name)
+
+		// Find container ID of the composeService
+		serviceContainerID, err := findContainerIDByServiceName(ctx, dockerCli, project.Name, serviceName)
+		if err != nil {
+			log.Panicf("Error finding container for composeService %s: %v", serviceName, err)
+		}
+		log.Printf("Found container ID for composeService %s: %s", serviceName, serviceContainerID)
+
+		go docker.CollectContainerStats(context.Background(), dockerCli, serviceContainerID, workdirPath)
+		go docker.MeasureRSS(context.Background(), dockerCli, serviceContainerID, workdirPath)
+
+		// Wait for the workload container to finish
+		statusCh, errCh := dockerCli.ContainerWait(ctx, workloadContainerResponse.ID, container.WaitConditionNotRunning)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				log.Panicf("Error waiting for workload container: %v", err)
 			}
-			log.Printf("Copying %s from container to results...", containerPath)
-			if err := docker.CopyFromContainer(ctx, cli, serviceContainerID, containerPath, workdirPath); err != nil {
-				log.Printf("Warning: Failed to copy %s: %v", containerPath, err)
+		case status := <-statusCh:
+			if status.Error != nil {
+				log.Panicf("Error in workload container: %v", status.Error.Message)
+			}
+			if status.StatusCode != 0 {
+				log.Printf("Workload container exited with status code: %d", status.StatusCode)
 			} else {
-				log.Printf("Successfully copied %s to results", containerPath)
+				log.Println("Workload container finished successfully")
 			}
 		}
-	}
+		time.Sleep(2 * time.Second) // wait for a while to collect final stats
+
+		// Copy specified paths from composeService container to results
+		if len(collectPaths) > 0 {
+			log.Printf("Collecting %d path(s) from composeService container...", len(collectPaths))
+			for _, containerPath := range collectPaths {
+				if containerPath == "" {
+					continue
+				}
+				log.Printf("Copying %s from container to results...", containerPath)
+				if err := docker.CopyFromContainer(ctx, dockerCli, serviceContainerID, containerPath, workdirPath); err != nil {
+					log.Printf("Warning: Failed to copy %s: %v", containerPath, err)
+				} else {
+					log.Printf("Successfully copied %s to results", containerPath)
+				}
+			}
+		}
+	*/
 }
 
 func startWorkloadContainer(ctx context.Context, cli *client.Client, workloadContainerResponse container.CreateResponse) {

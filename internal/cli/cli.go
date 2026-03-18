@@ -7,27 +7,17 @@ import (
 	"os"
 
 	"github.com/d-iii-s/slsbench/internal/service/dslvalidator"
-	"github.com/d-iii-s/slsbench/internal/service/harness"
 	"github.com/d-iii-s/slsbench/internal/utils"
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/d-iii-s/slsbench/internal/service/harness"
+	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "slsbench",
 	Short: "Serverless Benchmarking Tool",
 	Long:  `Serverless Benchmarking Tool - A comprehensive framework for evaluating the performance of serverless and containerized Java workloads.`,
-}
-
-var validateDslCmd = &cobra.Command{
-	Use:   "validate-dsl",
-	Short: "Validate a DSL YAML file against the built-in JSON Schema",
-	Long: `Validate a DSL YAML file against the built-in JSON Schema.
-
-This command reads a DSL definition from a YAML file and validates it
-against the built-in DSL JSON Schema. It prints a human-readable result
-and exits with code 0 on success, 1 on validation error.`,
-	RunE: runValidateDSL,
 }
 
 var harnessCmd = &cobra.Command{
@@ -50,34 +40,43 @@ This command orchestrates the benchmark execution by:
 var (
 	// Harness flags
 	harnessScenarioPath      string
-	harnessWrk2Params        string
+	openApiSpecPath          string
 	harnessPort              int
 	harnessResultPath        string
 	harnessDockerComposePath string
 	harnessServiceName       string
 	harnessCollectPaths      []string
-
-	// Validate DSL flags
-	validateDSLPath string
 )
 
 func init() {
-	// Validate DSL command flags
-	validateDslCmd.Flags().StringVarP(&validateDSLPath, "dsl-path", "d", "", "Path to the DSL YAML file to validate (required)")
-	validateDslCmd.MarkFlagRequired("dsl-path")
+	// Harness flags
+	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "", "Path to the scenario file")
+	if err := harnessCmd.MarkFlagRequired("scenario-path"); err != nil {
+		log.Fatalf("Failed to mark --scenario-path as required: %v", err)
+	}
 
-	// Harness command flags
-	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "./scenario.json", "Path to the scenario file")
-	harnessCmd.Flags().StringVarP(&harnessWrk2Params, "wrk2params", "w", "-t2 -c100 -d30s -R2000", "Additional wrk2 parameters")
-	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Port for the benchmark harness to use")
+	harnessCmd.Flags().StringVarP(&openApiSpecPath, "openapi-spec-path", "o", "", "Path to the OpenAPI spec file (optional)")
+	if err := harnessCmd.MarkFlagRequired("openapi-spec-path"); err != nil {
+		log.Fatalf("Failed to mark --openapi-spec-path as required: %v", err)
+	}
+
+	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Local port  for the benchmark harness to use")
+
 	harnessCmd.Flags().StringVarP(&harnessResultPath, "result-path", "r", "./result", "Path to save the results")
-	harnessCmd.Flags().StringVarP(&harnessDockerComposePath, "docker-compose-path", "d", "./docker-compose.yml", "Path to the docker-compose.yml file")
+
+	harnessCmd.Flags().StringVarP(&harnessDockerComposePath, "docker-compose-path", "d", "", "Path to the docker-compose.yml file")
+	if err := harnessCmd.MarkFlagRequired("docker-compose-path"); err != nil {
+		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
+	}
+
 	harnessCmd.Flags().StringVarP(&harnessServiceName, "service-name", "n", "", "Service name in the docker-compose file to benchmark (required)")
-	harnessCmd.MarkFlagRequired("service-name")
+	if err := harnessCmd.MarkFlagRequired("service-name"); err != nil {
+		log.Fatalf("Failed to mark --service-name as required: %v", err)
+	}
+
 	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
 
-	// Add subcommands to root
-	rootCmd.AddCommand(validateDslCmd)
+	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
 }
 
@@ -87,46 +86,52 @@ func Execute() {
 	}
 }
 
-func runValidateDSL(cmd *cobra.Command, args []string) error {
+func runValidateDSL(dslPath string) error {
 	ctx := context.Background()
-	log.Println("Validating DSL file:", validateDSLPath)
+	log.Println("Validating DSL file:", dslPath)
 
-	file, err := os.Open(validateDSLPath)
+	file, err := os.Open(dslPath)
 	if err != nil {
-		return fmt.Errorf("failed to open DSL file %q: %w", validateDSLPath, err)
+		return fmt.Errorf("failed to open DSL file %q: %w", dslPath, err)
 	}
 	defer file.Close()
 
 	var doc any
 	decoder := yaml.NewDecoder(file)
 	if err := decoder.Decode(&doc); err != nil {
-		return fmt.Errorf("failed to parse DSL YAML %q: %w", validateDSLPath, err)
+		return fmt.Errorf("failed to parse DSL YAML %q: %w", dslPath, err)
 	}
 
 	if err := dslvalidator.ValidateDSL(ctx, doc); err != nil {
 		// Try to pretty-print jsonschema validation errors if possible.
-		log.Printf("DSL validation failed for %s", validateDSLPath)
+		log.Printf("DSL validation failed for %s", dslPath)
 		utils.PrintJSON(err)
 		return fmt.Errorf("DSL validation failed: %w", err)
 	}
 
-	log.Printf("DSL validation passed for %s", validateDSLPath)
+	log.Printf("DSL validation passed for %s", dslPath)
 	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
+	// Validation input arguments
 	if harnessPort <= 0 {
 		return fmt.Errorf("the --port flag must be a positive integer")
 	}
 
-	log.Printf("Running harness: scenario=%s wrk2=%s result=%s docker-compose=%s port=%d service=%s",
-		harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessPort, harnessServiceName)
+	err := runValidateDSL(harnessScenarioPath)
+	if err != nil {
+		log.Fatalf("Scenario file validation failed: %v", err)
+	}
+
+	log.Printf("Running harness: scenario=%s result=%s docker-compose=%s port=%d service=%s",
+		harnessScenarioPath, harnessResultPath, harnessDockerComposePath, harnessPort, harnessServiceName)
 	if len(harnessCollectPaths) > 0 {
 		log.Printf("Will collect paths from service container: %v", harnessCollectPaths)
 	}
 
-	harness.Run(ctx, harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths)
+	harness.Run(ctx, harnessScenarioPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths, openApiSpecPath)
 	return nil
 }
