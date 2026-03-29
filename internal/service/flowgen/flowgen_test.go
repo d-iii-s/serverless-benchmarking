@@ -1,11 +1,6 @@
 package flowgen
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -96,11 +91,8 @@ func TestParseDSL(t *testing.T) {
 	if !s1.Flow[0].EntryNode {
 		t.Error("expected node1 to be entry node")
 	}
-	if s1.Flow[0].Endpoint != "/pets" {
-		t.Errorf("expected endpoint /pets, got %q", s1.Flow[0].Endpoint)
-	}
-	if s1.Flow[0].Method != "POST" {
-		t.Errorf("expected method POST, got %q", s1.Flow[0].Method)
+	if s1.Flow[0].OperationID != "createPet" {
+		t.Errorf("expected operationId createPet, got %q", s1.Flow[0].OperationID)
 	}
 	if len(s1.Flow[0].Edges) != 2 {
 		t.Fatalf("expected 2 edges, got %d", len(s1.Flow[0].Edges))
@@ -188,145 +180,3 @@ func assertCount(t *testing.T, counts []NodeBodyCount, name string, expected int
 	}
 	t.Errorf("node %q not found in counts", name)
 }
-
-// ---------------------------------------------------------------------------
-// GenerateFlowBodies integration test (with mock generator)
-// ---------------------------------------------------------------------------
-
-func TestGenerateFlowBodies_WithMock(t *testing.T) {
-	ctx := context.Background()
-	dslPath := filepath.Join("testdata", "test-dsl.yaml")
-	specPath := "unused_in_mock.yaml" // the mock doesn't use this
-	outputDir := t.TempDir()
-
-	// Mock generator: writes a JSON array with `count` dummy objects.
-	mockGen := func(_ context.Context, _, endpoint, method string, count int, outputPath string) error {
-		bodies := make([]map[string]any, count)
-		for i := range bodies {
-			bodies[i] = map[string]any{
-				"endpoint": endpoint,
-				"method":   method,
-				"index":    i,
-			}
-		}
-		data, _ := json.Marshal(bodies)
-		return os.WriteFile(outputPath, data, 0o644)
-	}
-
-	err := GenerateFlowBodies(ctx, dslPath, specPath, outputDir, mockGen)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify stage1 output.
-	verifyFile(t, filepath.Join(outputDir, "stage1", "node1.json"), 60000)
-	verifyEmptyArray(t, filepath.Join(outputDir, "stage1", "node2.json"))
-	verifyEmptyArray(t, filepath.Join(outputDir, "stage1", "node3.json"))
-
-	// Verify stage2 output.
-	verifyFile(t, filepath.Join(outputDir, "stage2", "node1.json"), 10000)
-	verifyEmptyArray(t, filepath.Join(outputDir, "stage2", "node2.json"))
-}
-
-func verifyFile(t *testing.T, path string, expectedCount int) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read %s: %v", path, err)
-	}
-	var arr []any
-	if err := json.Unmarshal(data, &arr); err != nil {
-		t.Fatalf("%s: not a valid JSON array: %v", path, err)
-	}
-	if len(arr) != expectedCount {
-		t.Errorf("%s: expected %d items, got %d", path, expectedCount, len(arr))
-	}
-}
-
-func verifyEmptyArray(t *testing.T, path string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read %s: %v", path, err)
-	}
-	if string(data) != "[]" {
-		t.Errorf("%s: expected empty array '[]', got %q", path, string(data))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Integration test with real Python/Schemathesis (skipped if unavailable)
-// ---------------------------------------------------------------------------
-
-func skipIfNoPython(t *testing.T) {
-	t.Helper()
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not found – skipping")
-	}
-	cmd := exec.Command("python3", "-c", "import schemathesis")
-	if err := cmd.Run(); err != nil {
-		t.Skip("schemathesis not installed – skipping")
-	}
-}
-
-func TestGenerateFlowBodies_RealPython(t *testing.T) {
-	skipIfNoPython(t)
-
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dslPath := filepath.Join(tmpDir, "test-dsl-small.yaml")
-	// Use the petstore spec from datagen testdata.
-	specPath := filepath.Join("..", "datagen", "testdata", "petstore.yaml")
-	outputDir := filepath.Join(tmpDir, "output")
-
-	// Write a small DSL for the real test (keep counts low).
-	smallDSL := `stages:
-  stage1:
-    wrk2params: -t1 -c1 -d1s -R3
-    flow:
-      - node1:
-        endpoint: /pets
-        method: POST
-        entrynode: true
-        edges:
-          - to: node2
-            weight: 1.0
-      - node2:
-        endpoint: /pets
-        method: GET
-`
-	if err := os.WriteFile(dslPath, []byte(smallDSL), 0o644); err != nil {
-		t.Fatalf("failed to write small DSL: %v", err)
-	}
-
-	// Use the real datagen.GenerateRequestBodies via import.
-	// We can't directly import datagen here without a circular dependency
-	// concern, so we replicate the Python call inline.
-	realGen := func(ctx context.Context, specP, endpoint, method string, count int, outputPath string) error {
-		scriptPath := filepath.Join("..", "..", "..", "scripts", "generate_bodies.py")
-		cmd := exec.CommandContext(ctx, "python3",
-			scriptPath,
-			"--spec-path", specP,
-			"--endpoint", endpoint,
-			"--method", method,
-			"--count", fmt.Sprintf("%d", count),
-			"--output", outputPath,
-		)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("python script failed: %w\n%s", err, string(out))
-		}
-		return nil
-	}
-
-	err := GenerateFlowBodies(ctx, dslPath, specPath, outputDir, realGen)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// node1 is POST /pets with count=3 -> should have 3 bodies.
-	verifyFile(t, filepath.Join(outputDir, "stage1", "node1.json"), 3)
-	// node2 is GET -> empty.
-	verifyEmptyArray(t, filepath.Join(outputDir, "stage1", "node2.json"))
-}
-

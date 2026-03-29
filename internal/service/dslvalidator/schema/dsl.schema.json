@@ -18,14 +18,9 @@
             "items": {
               "type": "object",
               "properties": {
-                "endpoint": {
+                "operationId": {
                   "type": "string",
-                  "description": "HTTP endpoint path, e.g. /api/v1/users"
-                },
-                "method": {
-                  "type": "string",
-                  "description": "HTTP method",
-                  "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+                  "description": "OpenAPI operationId used to resolve method/path at runtime"
                 },
                 "entrynode": {
                   "type": "boolean",
@@ -70,7 +65,7 @@
                   }
                 }
               },
-              "required": ["endpoint", "method"],
+              "required": ["operationId"],
               "additionalProperties": true
             }
           }

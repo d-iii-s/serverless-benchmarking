@@ -5,7 +5,6 @@
 package flowgen
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"os"
@@ -33,11 +32,12 @@ type Stage struct {
 
 // FlowNode is one node in a stage flow.
 type FlowNode struct {
-	Name      string `yaml:"-"` // populated during parsing from the YAML key
-	Endpoint  string `yaml:"endpoint"`
-	Method    string `yaml:"method"`
-	EntryNode bool   `yaml:"entrynode"`
-	Edges     []Edge `yaml:"edges"`
+	Name        string `yaml:"-"` // populated during parsing from the YAML key
+	OperationID string `yaml:"operationId"`
+	Endpoint    string `yaml:"endpoint"`
+	Method      string `yaml:"method"`
+	EntryNode   bool   `yaml:"entrynode"`
+	Edges       []Edge `yaml:"edges"`
 }
 
 // Edge is a weighted outgoing edge from one flow node to another.
@@ -77,7 +77,7 @@ func ParseDSL(path string) (*DSL, error) {
 	// mixed-key structure we first unmarshal into raw form, then convert.
 	var raw struct {
 		Stages map[string]struct {
-			Wrk2Params string `yaml:"wrk2params"`
+			Wrk2Params string      `yaml:"wrk2params"`
 			Flow       []yaml.Node `yaml:"flow"`
 		} `yaml:"stages"`
 	}
@@ -108,10 +108,9 @@ func ParseDSL(path string) (*DSL, error) {
 // parseFlowNode converts a YAML mapping node into a FlowNode.
 // The YAML structure looks like:
 //
-//	- node1:
-//	  endpoint: /api/v1/users
-//	  method: POST
-//	  ...
+//   - node1:
+//     operationId: createUser
+//     ...
 //
 // The first key that is not a known property is treated as the node name.
 func parseFlowNode(n *yaml.Node) (FlowNode, error) {
@@ -126,6 +125,8 @@ func parseFlowNode(n *yaml.Node) (FlowNode, error) {
 		val := n.Content[i+1]
 
 		switch key {
+		case "operationId":
+			fn.OperationID = val.Value
 		case "endpoint":
 			fn.Endpoint = val.Value
 		case "method":
@@ -147,7 +148,10 @@ func parseFlowNode(n *yaml.Node) (FlowNode, error) {
 	}
 
 	if fn.Name == "" {
-		fn.Name = fn.Endpoint // fallback
+		fn.Name = fn.OperationID // fallback
+	}
+	if fn.OperationID == "" {
+		return FlowNode{}, fmt.Errorf("missing required operationId")
 	}
 
 	return fn, nil
@@ -294,62 +298,3 @@ func methodHasBody(method string) bool {
 		return false
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Orchestration
-// ---------------------------------------------------------------------------
-
-// GenerateFlowBodies is the high-level entry point.  It parses the DSL,
-// computes body counts, and calls the body generator for each node that
-// needs bodies.
-//
-// generateFn is the callback that actually produces the bodies. Callers
-// typically pass datagen.GenerateRequestBodies.
-func GenerateFlowBodies(
-	ctx context.Context,
-	dslPath, specPath, outputDir string,
-	generateFn func(ctx context.Context, specPath, endpoint, method string, count int, outputPath string) error,
-) error {
-	dsl, err := ParseDSL(dslPath)
-	if err != nil {
-		return err
-	}
-
-	for stageName, stage := range dsl.Stages {
-		cfg, err := ParseWrk2Params(stage.Wrk2Params)
-		if err != nil {
-			return fmt.Errorf("stage %q: %w", stageName, err)
-		}
-		total := cfg.TotalRequests()
-
-		bodyCounts, err := ComputeBodyCounts(stage, total)
-		if err != nil {
-			return fmt.Errorf("stage %q: %w", stageName, err)
-		}
-
-		// Create stage output directory.
-		stageDir := fmt.Sprintf("%s/%s", outputDir, stageName)
-		if err := os.MkdirAll(stageDir, 0o755); err != nil {
-			return fmt.Errorf("failed to create directory %q: %w", stageDir, err)
-		}
-
-		for _, bc := range bodyCounts {
-			outputPath := fmt.Sprintf("%s/%s.json", stageDir, bc.NodeName)
-
-			if bc.Count == 0 {
-				// Write an empty JSON array for nodes without bodies.
-				if err := os.WriteFile(outputPath, []byte("[]"), 0o644); err != nil {
-					return fmt.Errorf("failed to write empty body file %q: %w", outputPath, err)
-				}
-				continue
-			}
-
-			if err := generateFn(ctx, specPath, bc.Endpoint, bc.Method, bc.Count, outputPath); err != nil {
-				return fmt.Errorf("stage %q node %q: %w", stageName, bc.NodeName, err)
-			}
-		}
-	}
-
-	return nil
-}
-

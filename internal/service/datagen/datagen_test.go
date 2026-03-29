@@ -3,9 +3,11 @@ package datagen
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,76 +25,117 @@ func skipIfNoPython(t *testing.T) {
 	}
 }
 
-func TestGenerateRequestBodies_Valid(t *testing.T) {
-	skipIfNoPython(t)
-
+func TestGenerateRequestBodiesData_ReturnsRemovedError(t *testing.T) {
 	ctx := context.Background()
 	specPath := filepath.Join("testdata", "petstore.yaml")
-	outputPath := filepath.Join(t.TempDir(), "bodies.json")
+	_, err := GenerateRequestBodiesData(ctx, specPath, "/pets", "POST", 1)
+	if err == nil {
+		t.Fatal("expected removed-per-operation error, got nil")
+	}
+}
 
-	err := GenerateRequestBodies(ctx, specPath, "/pets", "POST", 3, outputPath)
+func TestGenerateStatefulChainsData_RequiresChain(t *testing.T) {
+	ctx := context.Background()
+	specPath := filepath.Join("testdata", "petstore.yaml")
+	_, err := GenerateStatefulChainsData(ctx, specPath, "", "http://localhost:9966/petclinic/api", false)
+	if err == nil {
+		t.Fatal("expected error for missing chain, got nil")
+	}
+}
+
+func TestGenerateStatefulChainsData_BasicShape(t *testing.T) {
+	if os.Getenv("SLSBENCH_RUN_STATEFUL_TESTS") == "" {
+		t.Skip("set SLSBENCH_RUN_STATEFUL_TESTS=1 to run stateful datagen integration test")
+	}
+	skipIfNoPython(t)
+	resp, err := http.Get("http://localhost:9966/petclinic/api/owners")
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 500 {
+		t.Skip("localhost petclinic is not available for stateful integration test")
+	}
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+
+	ctx := context.Background()
+	specPath := filepath.Join("..", "..", "..", "workdir", "spring-petclinic-rest", "openapi.yml")
+	chains, err := GenerateStatefulChainsData(ctx, specPath, "addOwner", "http://localhost:9966/petclinic/api", false)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
+	if len(chains) == 0 {
+		t.Fatal("expected at least one generated chain")
+	}
+	if len(chains[0].Steps) == 0 {
+		t.Fatal("expected generated chain to include steps")
+	}
+	if chains[0].IterationID != 0 {
+		t.Fatalf("expected iterationIndex 0, got %d", chains[0].IterationID)
+	}
+	if chains[0].Steps[0].FlowID == "" {
+		t.Fatal("expected generated step to include flowId")
+	}
+}
 
-	// Read and parse the output file
-	data, err := os.ReadFile(outputPath)
+func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
+	minimal := ProjectMinimalIterations([]StatefulChain{
+		{
+			IterationID: 9,
+			ChainIndex:  2,
+			Steps: []StatefulStep{
+				{
+					FlowID:       "lifecycle/createOwner",
+					Method:       "POST",
+					Headers:      map[string]any{"content-type": "application/json"},
+					Query:        map[string]any{"q": "abc"},
+					ResolvedPath: "/owners/10",
+					RequestBody:  map[string]any{"ownerId": "/id"},
+					Status:       201,
+				},
+			},
+		},
+	})
+	if len(minimal) != 1 || len(minimal[0].Steps) != 1 {
+		t.Fatalf("unexpected projected size: %+v", minimal)
+	}
+	if minimal[0].Steps[0].FlowID != "lifecycle/createOwner" {
+		t.Fatalf("unexpected flowId in projection: %q", minimal[0].Steps[0].FlowID)
+	}
+	if minimal[0].Steps[0].ResolvedPath != "/owners/10" {
+		t.Fatalf("unexpected resolvedPath in projection: %q", minimal[0].Steps[0].ResolvedPath)
+	}
+	raw, err := json.Marshal(minimal[0].Steps[0])
 	if err != nil {
-		t.Fatalf("failed to read output file: %v", err)
+		t.Fatalf("failed to marshal minimal step: %v", err)
 	}
-
-	var bodies []map[string]any
-	if err := json.Unmarshal(data, &bodies); err != nil {
-		t.Fatalf("output is not a valid JSON array of objects: %v", err)
+	text := string(raw)
+	if !containsAll(text, []string{"flowId", "method", "headers", "query", "resolvedPath", "requestBody"}) {
+		t.Fatalf("expected minimal keys in output json, got %s", text)
 	}
-
-	if len(bodies) != 3 {
-		t.Fatalf("expected 3 bodies, got %d", len(bodies))
+	if containsAny(text, []string{"status", "operationId"}) {
+		t.Fatalf("unexpected rich fields in minimal output json: %s", text)
 	}
+	if strings.Contains(text, "$response.") {
+		t.Fatalf("unexpected response template in projected output json: %s", text)
+	}
+	if !strings.Contains(text, "/id") {
+		t.Fatalf("expected json pointer replacement in projected output json: %s", text)
+	}
+}
 
-	// Each body must have the required "name" field
-	for i, body := range bodies {
-		if _, ok := body["name"]; !ok {
-			t.Errorf("body[%d] missing required field 'name': %v", i, body)
+func containsAll(haystack string, needles []string) bool {
+	for _, needle := range needles {
+		if !strings.Contains(haystack, needle) {
+			return false
 		}
 	}
+	return true
 }
 
-func TestGenerateRequestBodies_InvalidSpec(t *testing.T) {
-	ctx := context.Background()
-	outputPath := filepath.Join(t.TempDir(), "bodies.json")
-
-	err := GenerateRequestBodies(ctx, "/nonexistent/openapi.yaml", "/pets", "POST", 3, outputPath)
-	if err == nil {
-		t.Fatal("expected error for non-existent spec path, got nil")
+func containsAny(haystack string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(haystack, needle) {
+			return true
+		}
 	}
-}
-
-func TestGenerateRequestBodies_InvalidCount(t *testing.T) {
-	ctx := context.Background()
-	specPath := filepath.Join("testdata", "petstore.yaml")
-	outputPath := filepath.Join(t.TempDir(), "bodies.json")
-
-	err := GenerateRequestBodies(ctx, specPath, "/pets", "POST", 0, outputPath)
-	if err == nil {
-		t.Fatal("expected error for count=0, got nil")
-	}
-
-	err = GenerateRequestBodies(ctx, specPath, "/pets", "POST", -1, outputPath)
-	if err == nil {
-		t.Fatal("expected error for count=-1, got nil")
-	}
-}
-
-func TestGenerateRequestBodies_UnknownEndpoint(t *testing.T) {
-	skipIfNoPython(t)
-
-	ctx := context.Background()
-	specPath := filepath.Join("testdata", "petstore.yaml")
-	outputPath := filepath.Join(t.TempDir(), "bodies.json")
-
-	err := GenerateRequestBodies(ctx, specPath, "/nonexistent", "POST", 3, outputPath)
-	if err == nil {
-		t.Fatal("expected error for unknown endpoint, got nil")
-	}
+	return false
 }

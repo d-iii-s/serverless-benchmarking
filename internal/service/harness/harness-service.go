@@ -3,9 +3,12 @@ package harness
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+
 	"github.com/compose-spec/compose-go/v2/types"
-	"github.com/d-iii-s/slsbench/internal/service/datagen"
-	"github.com/d-iii-s/slsbench/internal/service/flowgen"
+	workdirsvc "github.com/d-iii-s/slsbench/internal/service/workdir"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
@@ -13,16 +16,10 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
-	"log"
-	"os"
-	"path/filepath"
-	"time"
 )
 
 func createWorkdir(mountPath string) string {
-	// Workdir naming pattern: stdLongYear-stdZeroMonth-stdZeroDay-stdHour:stdZeroMinute:stdZeroSecond
-	workdirPath := filepath.Join(mountPath, "result-"+time.Now().Format("2006-01-02-15:04:05"))
-	err := os.MkdirAll(workdirPath, 0755)
+	workdirPath, err := workdirsvc.CreateResultSubdir(mountPath)
 	if err != nil {
 		log.Panicf("Error creating workdir: %v", err)
 	}
@@ -48,7 +45,7 @@ func (e EventProcessor) Start(ctx context.Context, operation string) {
 
 func (e EventProcessor) On(events ...api.Resource) {
 	for _, event := range events {
-		log.Printf("Resource ID: %s, Status: %s, Details: %s, Progress: %d/%d (%d%%)\n",
+		log.Printf("Resource ID: %s, Status: %v, Details: %s, Progress: %d/%d (%d%%)\n",
 			event.ID, event.Status, event.Details, event.Current, event.Total, event.Percent)
 	}
 }
@@ -83,11 +80,7 @@ func setupDockerCompose() api.Compose {
 
 func Run(ctx context.Context, scenarioPath, resultPath, dockerComposePath, serviceName string, port int, collectPaths []string, specPath string) {
 	// work dir on local machine
-	workdirPath := createWorkdir(resultPath)
-
-	if err := flowgen.GenerateFlowBodies(ctx, scenarioPath, specPath, workdirPath, datagen.GenerateRequestBodies); err != nil {
-		log.Panicf("Error generating flow bodies: %v", err)
-	}
+	// workdirPath := createWorkdir(resultPath)
 
 	/*
 		// setup compose

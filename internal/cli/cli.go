@@ -6,12 +6,12 @@ import (
 	"log"
 	"os"
 
+	"github.com/d-iii-s/slsbench/internal/service/bodyprobe"
 	"github.com/d-iii-s/slsbench/internal/service/dslvalidator"
-	"github.com/d-iii-s/slsbench/internal/utils"
-	"gopkg.in/yaml.v3"
-
 	"github.com/d-iii-s/slsbench/internal/service/harness"
+	"github.com/d-iii-s/slsbench/internal/utils"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var rootCmd = &cobra.Command{
@@ -37,6 +37,14 @@ This command orchestrates the benchmark execution by:
 	RunE: runHarness,
 }
 
+var probeBodiesCmd = &cobra.Command{
+	Use:   "probe-bodies",
+	Short: "Generate and probe stateful link-aware API chains",
+	Long: `Generate Schemathesis stateful chains (OpenAPI links-aware) and execute
+them against the running application, then persist accepted chain artifacts.`,
+	RunE: runProbeBodies,
+}
+
 var (
 	// Harness flags
 	harnessScenarioPath      string
@@ -46,9 +54,23 @@ var (
 	harnessDockerComposePath string
 	harnessServiceName       string
 	harnessCollectPaths      []string
+
+	// Probe command flags
+	probeOpenAPILink       string
+	probeChain             string
+	probeOutputPath        string
+	probeDockerComposePath string
+	probeServiceName       string
+	probePort              int
+	probeDebug             bool
 )
 
 func init() {
+	// todo: reuse generated data option
+	// check data against SPRING-REST
+	// lua scripts should be updated
+	// data generation can be separate program
+
 	// Harness flags
 	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "", "Path to the scenario file")
 	if err := harnessCmd.MarkFlagRequired("scenario-path"); err != nil {
@@ -76,8 +98,40 @@ func init() {
 
 	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
 
+	// Probe-bodies flags
+	probeBodiesCmd.Flags().StringVarP(&probeOpenAPILink, "openapi-link", "o", "", "OpenAPI file path or URL")
+	if err := probeBodiesCmd.MarkFlagRequired("openapi-link"); err != nil {
+		log.Fatalf("Failed to mark --openapi-link as required: %v", err)
+	}
+	probeBodiesCmd.Flags().StringVar(&probeChain, "chain", "", "Ordered comma-separated OpenAPI operationId values to execute as one chain")
+	if err := probeBodiesCmd.MarkFlagRequired("chain"); err != nil {
+		log.Fatalf("Failed to mark --chain as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeOutputPath, "output-path", "r", "./result-probe", "Output path for accepted generated bodies")
+	if err := probeBodiesCmd.MarkFlagRequired("output-path"); err != nil {
+		log.Fatalf("Failed to mark --output-path as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeDockerComposePath, "docker-compose-path", "d", "", "Path to the docker-compose.yml file (accepted but not used for lifecycle)")
+	if err := probeBodiesCmd.MarkFlagRequired("docker-compose-path"); err != nil {
+		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeServiceName, "service-name", "n", "", "Service name in docker-compose (accepted but not used for lifecycle)")
+	if err := probeBodiesCmd.MarkFlagRequired("service-name"); err != nil {
+		log.Fatalf("Failed to mark --service-name as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().IntVarP(&probePort, "port", "p", 8080, "Local running service port to probe")
+	if err := probeBodiesCmd.MarkFlagRequired("port"); err != nil {
+		log.Fatalf("Failed to mark --port as required: %v", err)
+	}
+	probeBodiesCmd.Flags().BoolVar(&probeDebug, "debug", false, "Enable detailed probe debug logs")
+
 	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
+	rootCmd.AddCommand(probeBodiesCmd)
 }
 
 func Execute() {
@@ -133,5 +187,21 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	harness.Run(ctx, harnessScenarioPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths, openApiSpecPath)
+	return nil
+}
+
+func runProbeBodies(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	if probePort <= 0 {
+		return fmt.Errorf("the --port flag must be a positive integer")
+	}
+	log.Printf("Running probe-bodies: chain=%s openapi=%s output=%s port=%d service=%s compose=%s",
+		probeChain, probeOpenAPILink, probeOutputPath, probePort, probeServiceName, probeDockerComposePath)
+	log.Printf("Note: service lifecycle is unmanaged in probe-bodies; expected running at localhost:%d", probePort)
+
+	if err := bodyprobe.Run(ctx, probeChain, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeServiceName, probePort, probeDebug); err != nil {
+		return err
+	}
 	return nil
 }
