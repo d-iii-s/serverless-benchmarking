@@ -1,0 +1,28 @@
+openapi: 3.0.3
+info:
+  title: Defaults Over Examples
+  version: "1.0"
+paths:
+  /counter:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - count
+              properties:
+                count:
+                  type: integer
+                  minimum: 0
+                  maximum: 100
+                  enum: [42]
+                  default: 42
+                  example: 99
+            example:
+              count: 77
+      responses:
+        "200":
+          description: ok
