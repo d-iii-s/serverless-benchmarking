@@ -4,123 +4,186 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/d-iii-s/slsbench/internal/service/datagen"
+	"github.com/d-iii-s/slsbench/internal/service/flowgen"
 )
 
-func TestRunWithGenerator_DoesNotWriteIterationsWhenDebugDisabled(t *testing.T) {
-	expectedChain := "createOwner"
+func TestRunWithGenerator_RequiresFlowPath(t *testing.T) {
 	outDir := t.TempDir()
-
-	generate := func(ctx context.Context, openAPILink, chain, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
-		if chain != expectedChain {
-			t.Fatalf("unexpected chain %q", chain)
-		}
-		if debug {
-			t.Fatalf("expected debug=false in generator call")
-		}
-		return []datagen.StatefulChain{
-			{
-				IterationID: 0,
-				ChainIndex:  0,
-				Steps: []datagen.StatefulStep{
-					{Method: "POST", ResolvedPath: "/owners", Status: 201, RequestBody: map[string]any{"firstName": "A"}},
-				},
-			},
-			{
-				IterationID: 1,
-				ChainIndex:  1,
-				Steps: []datagen.StatefulStep{
-					{Method: "POST", ResolvedPath: "/owners", Status: 201, RequestBody: map[string]any{"firstName": "B"}},
-				},
-			},
-		}, nil
+	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
+		return nil, nil
 	}
 
-	if err := runWithGenerator(context.Background(), expectedChain, "unused", outDir, "svc", 9966, generate, false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(outDir, "iterations.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected no iterations file when debug=false, stat err=%v", err)
+	err := runWithGenerator(context.Background(), " ", "unused", outDir, 9966, generate, false)
+	if err == nil {
+		t.Fatal("expected error for empty flow path")
 	}
 }
 
-func TestRunWithGenerator_WritesMinimalIterationsWhenDebugEnabled(t *testing.T) {
-	chain := "createOwner"
+func TestRequestTargetWithMargin(t *testing.T) {
+	if got := requestTargetWithMargin(100); got != 111 {
+		t.Fatalf("expected 111, got %d", got)
+	}
+	if got := requestTargetWithMargin(1); got != 2 {
+		t.Fatalf("expected 2, got %d", got)
+	}
+	if got := requestTargetWithMargin(0); got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
+func TestStageTraverser_WeightedRoundRobin(t *testing.T) {
+	stage := flowgen.Stage{
+		Flow: []flowgen.FlowNode{
+			{
+				Name:        "entry",
+				OperationID: "opEntry",
+				EntryNode:   true,
+				Edges: []flowgen.Edge{
+					{To: "a", Weight: 0.75},
+					{To: "b", Weight: 0.25},
+				},
+			},
+			{Name: "a", OperationID: "opA"},
+			{Name: "b", OperationID: "opB"},
+		},
+	}
+	traverser, err := newStageTraverser("stage1", stage)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var secondOps []string
+	for i := 0; i < 4; i++ {
+		ops, err := traverser.NextChainOperationIDs()
+		if err != nil {
+			t.Fatalf("traversal failed: %v", err)
+		}
+		if len(ops) != 2 {
+			t.Fatalf("expected 2 operations in chain, got %d", len(ops))
+		}
+		secondOps = append(secondOps, ops[1])
+	}
+	if !slices.Equal(secondOps, []string{"opA", "opA", "opB", "opA"}) {
+		t.Fatalf("unexpected WRR sequence: %#v", secondOps)
+	}
+}
+
+func TestRunWithGenerator_WritesPerStageIterations(t *testing.T) {
+	flowPath := writeTempFlow(t, `
+stages:
+  alpha:
+    wrk2params: -t1 -c1 -d1s -R2
+    flow:
+      - start:
+        operationId: addOwner
+        entrynode: true
+  beta:
+    wrk2params: -t1 -c1 -d1s -R1
+    flow:
+      - begin:
+        operationId: addOwner
+        entrynode: true
+`)
 	outDir := t.TempDir()
+	callCount := 0
 	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
-		if chainArg != chain {
-			t.Fatalf("expected chain=%q in generator call", chain)
-		}
-		if !debug {
-			t.Fatalf("expected debug=true in generator call")
-		}
+		callCount++
 		return []datagen.StatefulChain{
 			{
-				IterationID: 1,
-				ChainIndex:  1,
+				IterationID: callCount,
+				ChainIndex:  callCount,
 				Steps: []datagen.StatefulStep{
 					{
-						FlowID:       "stage1/createOwner",
+						FlowID:       fmt.Sprintf("flow-%d-a", callCount),
 						Method:       "POST",
+						PathTemplate: "/owners/{ownerId}",
+						PathParams:   map[string]any{"ownerId": "/id"},
 						Headers:      map[string]any{"content-type": "application/json"},
-						Query:        map[string]any{"q": "abc"},
+						Query:        map[string]any{"q": "x"},
 						ResolvedPath: "/owners",
+						RequestBody:  map[string]any{"n": callCount, "step": 1},
 						Status:       201,
-						RequestBody:  map[string]any{"ownerId": "/id"},
-						ResponseBody: map[string]any{"id": 10},
+					},
+					{
+						FlowID:       fmt.Sprintf("flow-%d-b", callCount),
+						Method:       "GET",
+						PathTemplate: "/owners/{ownerId}",
+						PathParams:   map[string]any{"ownerId": "/id"},
+						Headers:      map[string]any{"accept": "application/json"},
+						Query:        map[string]any{"q2": "y"},
+						ResolvedPath: "/owners/1",
+						RequestBody:  nil,
+						Status:       201,
 					},
 				},
 			},
 		}, nil
 	}
-
-	if err := runWithGenerator(context.Background(), chain, "unused", outDir, "svc", 9966, generate, true); err != nil {
+	if err := runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	data, err := os.ReadFile(filepath.Join(outDir, "iterations.json"))
-	if err != nil {
-		t.Fatalf("failed to read output: %v", err)
+	alphaFiles := listIterationFiles(t, filepath.Join(outDir, "alpha"))
+	betaFiles := listIterationFiles(t, filepath.Join(outDir, "beta"))
+	// alpha target: ceil(2*1*1.1)=3; beta target: ceil(1*1*1.1)=2.
+	// Each accepted iteration in this test has 2 steps, so alpha needs 2 files and beta needs 1 file.
+	if len(alphaFiles) != 2 {
+		t.Fatalf("expected 2 alpha iteration files, got %d", len(alphaFiles))
 	}
-	var iterations []datagen.MinimalIteration
-	if err := json.Unmarshal(data, &iterations); err != nil {
-		t.Fatalf("invalid output json: %v", err)
+	if len(betaFiles) != 1 {
+		t.Fatalf("expected 1 beta iteration file, got %d", len(betaFiles))
 	}
-	if len(iterations) != 1 || len(iterations[0].Steps) != 1 {
-		t.Fatalf("unexpected minimal iterations shape: %+v", iterations)
+	if got := totalStepCountFromFiles(t, filepath.Join(outDir, "alpha"), alphaFiles); got < 3 {
+		t.Fatalf("expected alpha total step count >= 3, got %d", got)
 	}
-	step := iterations[0].Steps[0]
-	if step.FlowID != "stage1/createOwner" {
-		t.Fatalf("expected flowId in minimal output, got %q", step.FlowID)
+	if got := totalStepCountFromFiles(t, filepath.Join(outDir, "beta"), betaFiles); got < 2 {
+		t.Fatalf("expected beta total step count >= 2, got %d", got)
 	}
-	if step.Method != "POST" {
-		t.Fatalf("expected method in minimal output, got %q", step.Method)
+	iteration := readIterationFile(t, filepath.Join(outDir, "alpha", alphaFiles[0]))
+	if len(iteration.Steps) != 2 {
+		t.Fatalf("expected one full chain iteration with 2 steps, got %d", len(iteration.Steps))
 	}
-	if step.ResolvedPath != "/owners" {
-		t.Fatalf("expected resolvedPath in minimal output, got %q", step.ResolvedPath)
+	sample := iteration.Steps[0]
+	if sample.Method == "" || sample.ResolvedPath == "" {
+		t.Fatalf("missing wrk2 required fields in output: %+v", sample)
 	}
-	if step.Headers["content-type"] != "application/json" {
-		t.Fatalf("expected headers in minimal output, got %#v", step.Headers)
+	if sample.PathTemplate != "/owners/{ownerId}" {
+		t.Fatalf("missing pathTemplate in output: %+v", sample)
 	}
-	if step.Query["q"] != "abc" {
-		t.Fatalf("expected query in minimal output, got %#v", step.Query)
+	if sample.PathParams["ownerId"] != "/id" {
+		t.Fatalf("missing pathParameters in output: %#v", sample.PathParams)
 	}
-	body, ok := step.RequestBody.(map[string]any)
-	if !ok || body["ownerId"] != "/id" {
-		t.Fatalf("expected json pointer request body in minimal output, got: %#v", step.RequestBody)
+	if _, ok := sample.Headers["content-type"]; !ok {
+		t.Fatalf("missing headers in output: %+v", sample.Headers)
+	}
+	if _, ok := sample.Query["q"]; !ok {
+		t.Fatalf("missing query in output: %+v", sample.Query)
+	}
+	if sample.RequestBody == nil {
+		t.Fatal("missing requestBody in output")
 	}
 }
 
-func TestRunWithGenerator_RequiresChain(t *testing.T) {
-	outDir := t.TempDir()
+func TestRunWithGeneratorAndWorkdir_CreatesResultSubdir(t *testing.T) {
+	flowPath := writeTempFlow(t, `
+stages:
+  stage1:
+    wrk2params: -t1 -c1 -d1s -R1
+    flow:
+      - createOwner:
+        operationId: addOwner
+        entrynode: true
+`)
+	baseDir := t.TempDir()
 	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
 		return []datagen.StatefulChain{
 			{
@@ -131,9 +194,76 @@ func TestRunWithGenerator_RequiresChain(t *testing.T) {
 		}, nil
 	}
 
-	err := runWithGenerator(context.Background(), " ", "unused", outDir, "svc", 9966, generate, false)
-	if err == nil {
-		t.Fatal("expected error for empty chain")
+	if err := runWithGeneratorAndWorkdir(context.Background(), flowPath, "unused", baseDir, 9966, generate, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		t.Fatalf("failed to list base dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one result subdir, got %d", len(entries))
+	}
+	name := entries[0].Name()
+	if ok, _ := regexp.MatchString(`^result-\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2}$`, name); !ok {
+		t.Fatalf("unexpected result directory name: %s", name)
+	}
+	stageDir := filepath.Join(baseDir, name, "stage1")
+	files := listIterationFiles(t, stageDir)
+	if len(files) != 2 {
+		t.Fatalf("expected 2 stage iteration files, got %d", len(files))
+	}
+}
+
+func TestRunWithGenerator_DebugLogsContainStageAndChain(t *testing.T) {
+	flowPath := writeTempFlow(t, `
+stages:
+  stage1:
+    wrk2params: -t1 -c1 -d1s -R1
+    flow:
+      - createOwner:
+        operationId: addOwner
+        entrynode: true
+`)
+	outDir := t.TempDir()
+	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
+		return []datagen.StatefulChain{
+			{
+				IterationID: 7,
+				ChainIndex:  7,
+				Steps: []datagen.StatefulStep{
+					{IterationID: 7, Stage: "stage1", OperationID: "addOwner", Method: "POST", ResolvedPath: "/owners", Status: 400, RequestBody: map[string]any{"a": 1}, ResponseBody: map[string]any{"message": "bad input"}},
+					{IterationID: 7, Stage: "stage1", OperationID: "addOwner", Method: "POST", ResolvedPath: "/owners", Status: 201, RequestBody: map[string]any{"a": 2}, ResponseBody: map[string]any{"id": 1}},
+				},
+			},
+		}, nil
+	}
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	err = runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("failed to read captured stdout: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "stage=stage1") {
+		t.Fatalf("expected stage log, got: %s", out)
+	}
+	if !strings.Contains(out, "chain=addOwner") {
+		t.Fatalf("expected chain log, got: %s", out)
 	}
 }
 
@@ -165,92 +295,6 @@ func TestFilterAcceptedChains_RejectsNon2xxChains(t *testing.T) {
 	}
 }
 
-func TestRunWithGeneratorAndWorkdir_CreatesResultSubdir(t *testing.T) {
-	baseDir := t.TempDir()
-	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
-		return []datagen.StatefulChain{
-			{
-				IterationID: 0,
-				ChainIndex:  0,
-				Steps:       []datagen.StatefulStep{{Method: "POST", ResolvedPath: "/owners", Status: 201}},
-			},
-		}, nil
-	}
-
-	if err := runWithGeneratorAndWorkdir(context.Background(), "createOwner", "unused", baseDir, "svc", 9966, generate, false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	entries, err := os.ReadDir(baseDir)
-	if err != nil {
-		t.Fatalf("failed to list base dir: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly one result subdir, got %d", len(entries))
-	}
-	name := entries[0].Name()
-	if ok, _ := regexp.MatchString(`^result-\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2}$`, name); !ok {
-		t.Fatalf("unexpected result directory name: %s", name)
-	}
-	outPath := filepath.Join(baseDir, name, "iterations.json")
-	if _, err := os.Stat(outPath); !os.IsNotExist(err) {
-		t.Fatalf("expected no iterations file when debug=false, stat err: %v", err)
-	}
-}
-
-func TestRunWithGenerator_DebugLogsContainChainStepFields(t *testing.T) {
-	outDir := t.TempDir()
-	generate := func(ctx context.Context, openAPILink, chainArg, baseURL string, debug bool) ([]datagen.StatefulChain, error) {
-		return []datagen.StatefulChain{
-			{
-				IterationID: 7,
-				ChainIndex:  7,
-				Steps: []datagen.StatefulStep{
-					{IterationID: 7, Stage: "stage1", OperationID: "addOwner", Method: "POST", ResolvedPath: "/owners", Status: 400, RequestBody: map[string]any{"a": 1}, ResponseBody: map[string]any{"message": "bad input"}},
-					{IterationID: 7, Stage: "stage1", OperationID: "addOwner", Method: "POST", ResolvedPath: "/owners", Status: 201, RequestBody: map[string]any{"a": 2}, ResponseBody: map[string]any{"id": 1}},
-				},
-			},
-		}, nil
-	}
-
-	origStdout := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("failed to create stdout pipe: %v", err)
-	}
-	os.Stdout = w
-	defer func() {
-		os.Stdout = origStdout
-	}()
-
-	err = runWithGenerator(context.Background(), "createOwner", "unused", outDir, "svc", 9966, generate, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	_ = w.Close()
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("failed to read captured stdout: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, "[probe-bodies] retry") || !strings.Contains(out, "status=400") {
-		t.Fatalf("expected debug retry/status log, got: %s", out)
-	}
-	if !strings.Contains(out, "chainIndex=7") || !strings.Contains(out, "stepIndex=0") {
-		t.Fatalf("expected chain step identifiers in log, got: %s", out)
-	}
-	if !strings.Contains(out, "request=") {
-		t.Fatalf("expected debug request payload log, got: %s", out)
-	}
-	if !strings.Contains(out, "response=") {
-		t.Fatalf("expected debug response payload log, got: %s", out)
-	}
-	if !strings.Contains(out, "message") {
-		t.Fatalf("expected failure response body message in logs, got: %s", out)
-	}
-}
-
 func TestFormatDebugPayload_TruncatesLongJSON(t *testing.T) {
 	longValue := strings.Repeat("x", maxDebugPayloadChars+200)
 	out := formatDebugPayload(map[string]any{"payload": longValue})
@@ -260,4 +304,56 @@ func TestFormatDebugPayload_TruncatesLongJSON(t *testing.T) {
 	if len(out) <= maxDebugPayloadChars {
 		t.Fatalf("expected output longer than cap due to suffix, got len=%d", len(out))
 	}
+}
+
+func readIterationFile(t *testing.T, path string) datagen.MinimalIteration {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read output file %s: %v", path, err)
+	}
+	var iteration datagen.MinimalIteration
+	if err := json.Unmarshal(data, &iteration); err != nil {
+		t.Fatalf("invalid output json: %v", err)
+	}
+	return iteration
+}
+
+func listIterationFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("failed to list dir %s: %v", dir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "iteration-") && strings.HasSuffix(name, ".json") {
+			files = append(files, name)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func totalStepCountFromFiles(t *testing.T, dir string, files []string) int {
+	t.Helper()
+	total := 0
+	for _, name := range files {
+		iteration := readIterationFile(t, filepath.Join(dir, name))
+		total += len(iteration.Steps)
+	}
+	return total
+}
+
+func writeTempFlow(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "flow.yaml")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write temp flow: %v", err)
+	}
+	return p
 }

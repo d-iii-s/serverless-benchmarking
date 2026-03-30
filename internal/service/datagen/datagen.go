@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,8 @@ type StatefulChain struct {
 type MinimalIterationStep struct {
 	FlowID       string         `json:"flowId"`
 	Method       string         `json:"method"`
+	PathTemplate string         `json:"pathTemplate"`
+	PathParams   map[string]any `json:"pathParameters"`
 	Headers      map[string]any `json:"headers"`
 	Query        map[string]any `json:"query"`
 	ResolvedPath string         `json:"resolvedPath"`
@@ -57,6 +60,10 @@ func ProjectMinimalIterations(chains []StatefulChain) []MinimalIteration {
 	for _, chain := range chains {
 		steps := make([]MinimalIterationStep, 0, len(chain.Steps))
 		for _, step := range chain.Steps {
+			pathParams := step.PathParams
+			if pathParams == nil {
+				pathParams = map[string]any{}
+			}
 			headers := step.Headers
 			if headers == nil {
 				headers = map[string]any{}
@@ -68,6 +75,8 @@ func ProjectMinimalIterations(chains []StatefulChain) []MinimalIteration {
 			steps = append(steps, MinimalIterationStep{
 				FlowID:       step.FlowID,
 				Method:       step.Method,
+				PathTemplate: step.PathTemplate,
+				PathParams:   pathParams,
 				Headers:      headers,
 				Query:        query,
 				ResolvedPath: step.ResolvedPath,
@@ -158,6 +167,7 @@ func GenerateStatefulChainsData(
 		"--chain", chain,
 		"--output", tmpPath,
 		"--base-url", baseURL,
+		"--max-tries", "100",
 	}
 	if debug {
 		args = append(args, "--debug")
@@ -165,7 +175,7 @@ func GenerateStatefulChainsData(
 	cmd := exec.CommandContext(ctx, "python3", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("generate_bodies.py stateful failed (exit %v): %s", err, string(output))
+		log.Fatalf("generate_bodies.py stateful failed (exit %v): %s", err, string(output))
 	}
 	if debug && len(output) > 0 {
 		// Forward python debug logs (stderr captured in CombinedOutput).

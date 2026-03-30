@@ -85,6 +85,8 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 				{
 					FlowID:       "lifecycle/createOwner",
 					Method:       "POST",
+					PathTemplate: "/owners/{ownerId}",
+					PathParams:   map[string]any{"ownerId": "/id"},
 					Headers:      map[string]any{"content-type": "application/json"},
 					Query:        map[string]any{"q": "abc"},
 					ResolvedPath: "/owners/10",
@@ -103,12 +105,18 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 	if minimal[0].Steps[0].ResolvedPath != "/owners/10" {
 		t.Fatalf("unexpected resolvedPath in projection: %q", minimal[0].Steps[0].ResolvedPath)
 	}
+	if minimal[0].Steps[0].PathTemplate != "/owners/{ownerId}" {
+		t.Fatalf("unexpected pathTemplate in projection: %q", minimal[0].Steps[0].PathTemplate)
+	}
+	if minimal[0].Steps[0].PathParams["ownerId"] != "/id" {
+		t.Fatalf("unexpected pathParameters in projection: %#v", minimal[0].Steps[0].PathParams)
+	}
 	raw, err := json.Marshal(minimal[0].Steps[0])
 	if err != nil {
 		t.Fatalf("failed to marshal minimal step: %v", err)
 	}
 	text := string(raw)
-	if !containsAll(text, []string{"flowId", "method", "headers", "query", "resolvedPath", "requestBody"}) {
+	if !containsAll(text, []string{"flowId", "method", "pathTemplate", "pathParameters", "headers", "query", "resolvedPath", "requestBody"}) {
 		t.Fatalf("expected minimal keys in output json, got %s", text)
 	}
 	if containsAny(text, []string{"status", "operationId"}) {
