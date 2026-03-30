@@ -6,15 +6,17 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"github.com/d-iii-s/slsbench/internal/model"
-	"github.com/getkin/kin-openapi/openapi3"
-	"gopkg.in/yaml.v3"
 	"io"
 	"io/fs"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/d-iii-s/slsbench/internal/model"
+	"github.com/getkin/kin-openapi/openapi3"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -23,7 +25,7 @@ const (
 	HintLastName  = "lastName"
 	HintFullName  = "fullName"
 	HintName      = "name"
-	
+
 	// Internet hints
 	HintEmail      = "email"
 	HintUsername   = "username"
@@ -35,22 +37,22 @@ const (
 	HintIP         = "ip"
 	HintIPv4       = "ipv4"
 	HintIPv6       = "ipv6"
-	
+
 	// Address hints
 	HintCity    = "city"
 	HintState   = "state"
 	HintCountry = "country"
-	
+
 	// String hints
 	HintWord   = "word"
 	HintString = "string"
-	
+
 	// Date hints
-	HintDate     = "date"
+	HintDate      = "date"
 	HintTimestamp = "timestamp"
-	HintDateTime = "dateTime"
-	HintISO8601  = "iso8601"
-	
+	HintDateTime  = "dateTime"
+	HintISO8601   = "iso8601"
+
 	// Datatype hints
 	HintUUID    = "uuid"
 	HintNumber  = "number"
@@ -61,7 +63,7 @@ const (
 	HintBoolean = "boolean"
 	HintByte    = "byte"
 	HintBinary  = "binary"
-	
+
 	// ID hint
 	HintID = "id"
 )
@@ -76,7 +78,7 @@ var HintOptions = []string{
 	HintLastName,
 	HintFullName,
 	HintName,
-	
+
 	// Internet
 	HintEmail,
 	HintUsername,
@@ -88,22 +90,22 @@ var HintOptions = []string{
 	HintIP,
 	HintIPv4,
 	HintIPv6,
-	
+
 	// Address
 	HintCity,
 	HintState,
 	HintCountry,
-	
+
 	// String
 	HintWord,
 	HintString,
-	
+
 	// Date
 	HintDate,
 	HintTimestamp,
 	HintDateTime,
 	HintISO8601,
-	
+
 	// Datatype
 	HintUUID,
 	HintNumber,
@@ -114,7 +116,7 @@ var HintOptions = []string{
 	HintBoolean,
 	HintByte,
 	HintBinary,
-	
+
 	// ID
 	HintID,
 }
@@ -354,4 +356,19 @@ func DumpJSON(v any) string {
 // PrintJSON prints any struct in a readable JSON format
 func PrintJSON(v any) {
 	fmt.Println(DumpJSON(v))
+}
+
+func CreateResultSubdir(path string) (string, error) {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create base directory %q: %w", path, err)
+	}
+
+	dirName := fmt.Sprintf("result-%s", time.Now().Format("2006-01-02-15:04:05"))
+	resultDir := filepath.Join(path, dirName)
+
+	if err := os.Mkdir(resultDir, 0o755); err != nil {
+		return "", fmt.Errorf("failed to create result subdirectory %q: %w", resultDir, err)
+	}
+
+	return resultDir, nil
 }

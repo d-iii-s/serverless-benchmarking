@@ -12,7 +12,7 @@ import (
 
 	"github.com/d-iii-s/slsbench/internal/service/datagen"
 	"github.com/d-iii-s/slsbench/internal/service/flowgen"
-	workdirsvc "github.com/d-iii-s/slsbench/internal/service/workdir"
+	utils "github.com/d-iii-s/slsbench/internal/utils"
 )
 
 const (
@@ -44,7 +44,7 @@ func runWithGeneratorAndWorkdir(
 	generateFn generateChainsFn,
 	debug bool,
 ) error {
-	runDir, err := workdirsvc.CreateResultSubdir(outputBasePath)
+	runDir, err := utils.CreateResultSubdir(outputBasePath)
 	if err != nil {
 		return fmt.Errorf("failed to create probe result directory: %w", err)
 	}

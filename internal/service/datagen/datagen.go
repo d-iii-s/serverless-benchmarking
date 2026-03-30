@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-// todo: generate_bodies should take instruction in which order generate bodies.
-
 // scriptRelPath is the path from the project root to the Python helper script.
 const scriptRelPath = "scripts/generate_bodies.py"
 

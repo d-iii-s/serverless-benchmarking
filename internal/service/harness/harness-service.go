@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	workdirsvc "github.com/d-iii-s/slsbench/internal/service/workdir"
+	utils "github.com/d-iii-s/slsbench/internal/utils"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
@@ -19,7 +19,7 @@ import (
 )
 
 func createWorkdir(mountPath string) string {
-	workdirPath, err := workdirsvc.CreateResultSubdir(mountPath)
+	workdirPath, err := utils.CreateResultSubdir(mountPath)
 	if err != nil {
 		log.Panicf("Error creating workdir: %v", err)
 	}
