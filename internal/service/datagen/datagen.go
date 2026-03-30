@@ -8,12 +8,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
 
 // scriptRelPath is the path from the project root to the Python helper script.
 const scriptRelPath = "scripts/generate_bodies.py"
+
+var (
+	stepScopedRefPattern      = regexp.MustCompile(`^[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
+	stageScopedRefPattern     = regexp.MustCompile(`^[^.]+\.[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
+)
 
 type StatefulStep struct {
 	IterationID  int            `json:"iterationIndex"`
@@ -58,17 +64,22 @@ func ProjectMinimalIterations(chains []StatefulChain) []MinimalIteration {
 	for _, chain := range chains {
 		steps := make([]MinimalIterationStep, 0, len(chain.Steps))
 		for _, step := range chain.Steps {
-			pathParams := step.PathParams
+			pathParams, _ := prefixStageScopedReferences(step.PathParams, step.Stage).(map[string]any)
 			if pathParams == nil {
 				pathParams = map[string]any{}
 			}
-			headers := step.Headers
+			headers, _ := prefixStageScopedReferences(step.Headers, step.Stage).(map[string]any)
 			if headers == nil {
 				headers = map[string]any{}
 			}
-			query := step.Query
+			query, _ := prefixStageScopedReferences(step.Query, step.Stage).(map[string]any)
 			if query == nil {
 				query = map[string]any{}
+			}
+			requestBody := prefixStageScopedReferences(step.RequestBody, step.Stage)
+			resolvedPath := step.ResolvedPath
+			if stageScopedValue, ok := prefixStageScopedReferences(resolvedPath, step.Stage).(string); ok {
+				resolvedPath = stageScopedValue
 			}
 			steps = append(steps, MinimalIterationStep{
 				FlowID:       step.FlowID,
@@ -77,8 +88,8 @@ func ProjectMinimalIterations(chains []StatefulChain) []MinimalIteration {
 				PathParams:   pathParams,
 				Headers:      headers,
 				Query:        query,
-				ResolvedPath: step.ResolvedPath,
-				RequestBody:  step.RequestBody,
+				ResolvedPath: resolvedPath,
+				RequestBody:  requestBody,
 			})
 		}
 		minimal = append(minimal, MinimalIteration{
@@ -87,6 +98,36 @@ func ProjectMinimalIterations(chains []StatefulChain) []MinimalIteration {
 		})
 	}
 	return minimal
+}
+
+func prefixStageScopedReferences(value any, stage string) any {
+	if strings.TrimSpace(stage) == "" || value == nil {
+		return value
+	}
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, nested := range v {
+			out[key] = prefixStageScopedReferences(nested, stage)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, nested := range v {
+			out[i] = prefixStageScopedReferences(nested, stage)
+		}
+		return out
+	case string:
+		if stageScopedRefPattern.MatchString(v) {
+			return v
+		}
+		if stepScopedRefPattern.MatchString(v) {
+			return stage + "." + v
+		}
+		return v
+	default:
+		return value
+	}
 }
 
 // GenerateRequestBodies invokes the Schemathesis-based Python script to

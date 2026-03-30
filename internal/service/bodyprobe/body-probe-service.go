@@ -13,6 +13,7 @@ import (
 	"github.com/d-iii-s/slsbench/internal/service/datagen"
 	"github.com/d-iii-s/slsbench/internal/service/flowgen"
 	utils "github.com/d-iii-s/slsbench/internal/utils"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -82,80 +83,97 @@ func runWithGenerator(
 	}
 	sort.Strings(stageNames)
 
+	g, ctx := errgroup.WithContext(ctx)
 	for _, stageName := range stageNames {
+		stageName := stageName
 		stage := dsl.Stages[stageName]
-		cfg, err := flowgen.ParseWrk2Params(stage.Wrk2Params)
-		if err != nil {
-			return fmt.Errorf("stage %q: invalid wrk2params: %w", stageName, err)
-		}
-		target := requestTargetWithMargin(cfg.TotalRequests())
-		if target <= 0 {
-			return fmt.Errorf("stage %q: computed non-positive target %d", stageName, target)
-		}
-		traverser, err := newStageTraverser(stageName, stage)
+		g.Go(func() error {
+			return runStageProbe(ctx, stageName, stage, outputPath, openAPILink, baseURL, generateFn, debug)
+		})
+	}
+	return g.Wait()
+}
+
+// runStageProbe collects accepted chain iterations for one flow stage. Stages run concurrently
+// in runWithGenerator; each stage writes only under outputPath/<stageName>.
+func runStageProbe(
+	ctx context.Context,
+	stageName string,
+	stage flowgen.Stage,
+	outputPath, openAPILink, baseURL string,
+	generateFn generateChainsFn,
+	debug bool,
+) error {
+	cfg, err := flowgen.ParseWrk2Params(stage.Wrk2Params)
+	if err != nil {
+		return fmt.Errorf("stage %q: invalid wrk2params: %w", stageName, err)
+	}
+	target := requestTargetWithMargin(cfg.TotalRequests())
+	if target <= 0 {
+		return fmt.Errorf("stage %q: computed non-positive target %d", stageName, target)
+	}
+	traverser, err := newStageTraverser(stageName, stage)
+	if err != nil {
+		return err
+	}
+
+	acceptedIterations := make([]datagen.MinimalIteration, 0, target)
+	acceptedRequestCount := 0
+	attemptLimit := maxInt(target*10, 50)
+	attempts := 0
+	for acceptedRequestCount < target && attempts < attemptLimit {
+		operationIDs, err := traverser.NextChainOperationIDs()
 		if err != nil {
 			return err
 		}
-
-		acceptedIterations := make([]datagen.MinimalIteration, 0, target)
-		acceptedRequestCount := 0
-		attemptLimit := maxInt(target*10, 50)
-		attempts := 0
-		for acceptedRequestCount < target && attempts < attemptLimit {
-			operationIDs, err := traverser.NextChainOperationIDs()
-			if err != nil {
-				return err
-			}
-			chain := strings.Join(operationIDs, ",")
+		chain := strings.Join(operationIDs, ",")
+		if debug {
+			fmt.Printf("[probe-bodies] stage=%s attempt=%d chain=%s\n", stageName, attempts+1, chain)
+		}
+		generatedChains, err := generateFn(ctx, openAPILink, chain, baseURL, debug)
+		attempts++
+		if err != nil {
 			if debug {
-				fmt.Printf("[probe-bodies] stage=%s attempt=%d chain=%s\n", stageName, attempts+1, chain)
+				fmt.Printf("[probe-bodies] stage=%s generation error: %v\n", stageName, err)
 			}
-			generatedChains, err := generateFn(ctx, openAPILink, chain, baseURL, debug)
-			attempts++
-			if err != nil {
-				if debug {
-					fmt.Printf("[probe-bodies] stage=%s generation error: %v\n", stageName, err)
-				}
-				continue
-			}
-			acceptedChains, stats := filterAcceptedChains(generatedChains)
-			if debug {
-				logChainsDebug(stageName, acceptedChains, generatedChains, stats)
-			}
-			for _, chainResult := range acceptedChains {
-				for idx := range chainResult.Steps {
-					step := &chainResult.Steps[idx]
-					if step.Stage == "" {
-						step.Stage = stageName
-					}
-				}
-				iterations := datagen.ProjectMinimalIterations([]datagen.StatefulChain{chainResult})
-				for _, iteration := range iterations {
-					if len(iteration.Steps) == 0 {
-						continue
-					}
-					acceptedIterations = append(acceptedIterations, iteration)
-					acceptedRequestCount += len(iteration.Steps)
-				}
-				if acceptedRequestCount >= target {
-					break
-				}
-			}
+			continue
 		}
-
-		if acceptedRequestCount < target {
-			return fmt.Errorf("stage %q: collected %d/%d accepted steps", stageName, acceptedRequestCount, target)
+		acceptedChains, stats := filterAcceptedChains(generatedChains)
+		if debug {
+			logChainsDebug(stageName, acceptedChains, generatedChains, stats)
 		}
-
-		stageDir := filepath.Join(outputPath, stageName)
-		if err := os.MkdirAll(stageDir, 0o755); err != nil {
-			return fmt.Errorf("failed to create stage output directory %q: %w", stageDir, err)
-		}
-		if err := writeStageIterationFiles(stageName, stageDir, acceptedIterations); err != nil {
-			return err
+		for _, chainResult := range acceptedChains {
+			for idx := range chainResult.Steps {
+				step := &chainResult.Steps[idx]
+				if step.Stage == "" {
+					step.Stage = stageName
+				}
+			}
+			iterations := datagen.ProjectMinimalIterations([]datagen.StatefulChain{chainResult})
+			for _, iteration := range iterations {
+				if len(iteration.Steps) == 0 {
+					continue
+				}
+				acceptedIterations = append(acceptedIterations, iteration)
+				acceptedRequestCount += len(iteration.Steps)
+			}
+			if acceptedRequestCount >= target {
+				break
+			}
 		}
 	}
 
+	if acceptedRequestCount < target {
+		return fmt.Errorf("stage %q: collected %d/%d accepted steps", stageName, acceptedRequestCount, target)
+	}
+
+	stageDir := filepath.Join(outputPath, stageName)
+	if err := os.MkdirAll(stageDir, 0o755); err != nil {
+		return fmt.Errorf("failed to create stage output directory %q: %w", stageDir, err)
+	}
+	if err := writeStageIterationFiles(stageName, stageDir, acceptedIterations); err != nil {
+		return err
+	}
 	return nil
 }
 

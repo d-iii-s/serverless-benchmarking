@@ -83,14 +83,15 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 			ChainIndex:  2,
 			Steps: []StatefulStep{
 				{
+					Stage:        "lifecycle",
 					FlowID:       "lifecycle/createOwner",
 					Method:       "POST",
 					PathTemplate: "/owners/{ownerId}",
-					PathParams:   map[string]any{"ownerId": "/id"},
+					PathParams:   map[string]any{"ownerId": "addOwner.responseBody#/id"},
 					Headers:      map[string]any{"content-type": "application/json"},
 					Query:        map[string]any{"q": "abc"},
 					ResolvedPath: "/owners/10",
-					RequestBody:  map[string]any{"ownerId": "/id"},
+					RequestBody:  map[string]any{"ownerId": "addOwner.requestBody#/owner/id"},
 					Status:       201,
 				},
 			},
@@ -108,8 +109,15 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 	if minimal[0].Steps[0].PathTemplate != "/owners/{ownerId}" {
 		t.Fatalf("unexpected pathTemplate in projection: %q", minimal[0].Steps[0].PathTemplate)
 	}
-	if minimal[0].Steps[0].PathParams["ownerId"] != "/id" {
+	if minimal[0].Steps[0].PathParams["ownerId"] != "lifecycle.addOwner.responseBody#/id" {
 		t.Fatalf("unexpected pathParameters in projection: %#v", minimal[0].Steps[0].PathParams)
+	}
+	bodyMap, ok := minimal[0].Steps[0].RequestBody.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected requestBody type: %#v", minimal[0].Steps[0].RequestBody)
+	}
+	if bodyMap["ownerId"] != "lifecycle.addOwner.requestBody#/owner/id" {
+		t.Fatalf("unexpected requestBody in projection: %#v", bodyMap)
 	}
 	raw, err := json.Marshal(minimal[0].Steps[0])
 	if err != nil {
@@ -125,8 +133,8 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 	if strings.Contains(text, "$response.") {
 		t.Fatalf("unexpected response template in projected output json: %s", text)
 	}
-	if !strings.Contains(text, "/id") {
-		t.Fatalf("expected json pointer replacement in projected output json: %s", text)
+	if !strings.Contains(text, "lifecycle.addOwner.responseBody#/id") {
+		t.Fatalf("expected stage-scoped json pointer replacement in projected output json: %s", text)
 	}
 }
 

@@ -107,11 +107,15 @@ stages:
 						FlowID:       fmt.Sprintf("flow-%d-a", callCount),
 						Method:       "POST",
 						PathTemplate: "/owners/{ownerId}",
-						PathParams:   map[string]any{"ownerId": "/id"},
+						PathParams:   map[string]any{"ownerId": "addOwner.responseBody#/id"},
 						Headers:      map[string]any{"content-type": "application/json"},
 						Query:        map[string]any{"q": "x"},
 						ResolvedPath: "/owners",
-						RequestBody:  map[string]any{"n": callCount, "step": 1},
+						RequestBody: map[string]any{
+							"n":            callCount,
+							"step":         1,
+							"ownerPointer": "addOwner.requestBody#/owner/id",
+						},
 						Status:       201,
 					},
 					{
@@ -159,7 +163,7 @@ stages:
 	if sample.PathTemplate != "/owners/{ownerId}" {
 		t.Fatalf("missing pathTemplate in output: %+v", sample)
 	}
-	if sample.PathParams["ownerId"] != "/id" {
+	if sample.PathParams["ownerId"] != "alpha.addOwner.responseBody#/id" {
 		t.Fatalf("missing pathParameters in output: %#v", sample.PathParams)
 	}
 	if _, ok := sample.Headers["content-type"]; !ok {
@@ -170,6 +174,13 @@ stages:
 	}
 	if sample.RequestBody == nil {
 		t.Fatal("missing requestBody in output")
+	}
+	requestBody, ok := sample.RequestBody.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected requestBody shape: %#v", sample.RequestBody)
+	}
+	if requestBody["ownerPointer"] != "alpha.addOwner.requestBody#/owner/id" {
+		t.Fatalf("missing stage-scoped request pointer in output: %#v", requestBody)
 	}
 }
 

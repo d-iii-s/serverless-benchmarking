@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 
 	"github.com/compose-spec/compose-go/v2/types"
-	utils "github.com/d-iii-s/slsbench/internal/utils"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
@@ -17,21 +14,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 )
-
-func createWorkdir(mountPath string) string {
-	workdirPath, err := utils.CreateResultSubdir(mountPath)
-	if err != nil {
-		log.Panicf("Error creating workdir: %v", err)
-	}
-	return workdirPath
-}
-
-func createJFRWorkdir(workdirPath string) {
-	err := os.MkdirAll(filepath.Join(workdirPath, "jfr"), 0755)
-	if err != nil {
-		log.Panicf("Error creating jfr subreddit: %v", err)
-	}
-}
 
 type EventProcessor struct{}
 

@@ -7,10 +7,15 @@ import numbers
 import sys
 
 import schemathesis
+from schemathesis.internal.result import Err, Ok
 from schemathesis.specs.openapi.expressions import ExpressionContext
 from schemathesis.specs.openapi.stateful import get_all_links, expand_status_code
 
 RESPONSE_BODY_EXPR_PREFIX = "$response.body#"
+REQUEST_PATH_EXPR_PREFIX = "$request.path."
+REQUEST_QUERY_EXPR_PREFIX = "$request.query."
+REQUEST_HEADER_EXPR_PREFIX = "$request.header."
+REQUEST_BODY_EXPR_PREFIX = "$request.body#"
 
 
 def _parse_response_payload(response):
@@ -39,6 +44,10 @@ def _decode_json_pointer_token(token):
     return token.replace("~1", "/").replace("~0", "~")
 
 
+def _encode_json_pointer_token(token):
+    return str(token).replace("~", "~0").replace("/", "~1")
+
+
 def _parse_response_body_expression(expression):
     if not isinstance(expression, str):
         return None
@@ -56,13 +65,20 @@ def _extract_json_pointer_from_expression(expression):
     return _parse_response_body_expression(expression)
 
 
-def _resolve_response_expression(response_payload, expression):
-    pointer = _parse_response_body_expression(expression)
+def _parse_json_pointer(pointer):
+    if pointer == "":
+        return "/"
+    if pointer.startswith("/"):
+        return pointer
+    return None
+
+
+def _resolve_json_pointer(payload, pointer):
     if pointer is None:
         return None
     if pointer == "/":
-        return response_payload
-    current = response_payload
+        return payload
+    current = payload
     for raw_token in pointer.split("/")[1:]:
         token = _decode_json_pointer_token(raw_token)
         if isinstance(current, list):
@@ -82,6 +98,108 @@ def _resolve_response_expression(response_payload, expression):
     return current
 
 
+def _resolve_response_expression(response_payload, expression):
+    pointer = _parse_response_body_expression(expression)
+    return _resolve_json_pointer(response_payload, pointer)
+
+
+def _parse_request_expression(expression):
+    if not isinstance(expression, str):
+        return None
+    if expression.startswith(REQUEST_PATH_EXPR_PREFIX):
+        name = expression[len(REQUEST_PATH_EXPR_PREFIX) :]
+        if name:
+            return "endpoint", "/" + _encode_json_pointer_token(name)
+        return None
+    if expression.startswith(REQUEST_QUERY_EXPR_PREFIX):
+        name = expression[len(REQUEST_QUERY_EXPR_PREFIX) :]
+        if name:
+            return "query", "/" + _encode_json_pointer_token(name)
+        return None
+    if expression.startswith(REQUEST_HEADER_EXPR_PREFIX):
+        name = expression[len(REQUEST_HEADER_EXPR_PREFIX) :]
+        if name:
+            return "headers", "/" + _encode_json_pointer_token(name)
+        return None
+    if expression == "$request.body":
+        return "requestBody", "/"
+    if expression.startswith(REQUEST_BODY_EXPR_PREFIX):
+        pointer = _parse_json_pointer(expression[len(REQUEST_BODY_EXPR_PREFIX) :])
+        if pointer is None:
+            return None
+        return "requestBody", pointer
+    return None
+
+
+def _resolve_request_expression(previous_case, source, pointer):
+    if source == "endpoint":
+        values = previous_case.path_parameters or {}
+        if pointer == "/" or not pointer.startswith("/"):
+            return None
+        key = _decode_json_pointer_token(pointer[1:])
+        return values.get(key)
+    if source == "query":
+        values = previous_case.query or {}
+        if pointer == "/" or not pointer.startswith("/"):
+            return None
+        key = _decode_json_pointer_token(pointer[1:])
+        return values.get(key)
+    if source == "headers":
+        values = dict(previous_case.headers or {})
+        if pointer == "/" or not pointer.startswith("/"):
+            return None
+        key = _decode_json_pointer_token(pointer[1:])
+        if key in values:
+            return values[key]
+        lowered = key.lower()
+        for header_key, value in values.items():
+            if isinstance(header_key, str) and header_key.lower() == lowered:
+                return value
+        return None
+    if source == "requestBody":
+        body = _normalize_request_body(previous_case.body)
+        return _resolve_json_pointer(body, pointer)
+    return None
+
+
+def _step_pointer_reference(step_name, source, pointer):
+    return f"{step_name}.{source}#{pointer}"
+
+
+def _extract_request_expression_pairs(link, previous_case, previous_step_id):
+    pairs = []
+    seen = set()
+    candidates = []
+    parameters = getattr(link, "parameters", None)
+    if parameters is not None:
+        candidates.append(parameters)
+    request_body = getattr(link, "request_body", None)
+    if request_body is not None:
+        candidates.append(request_body)
+    body = getattr(link, "body", None)
+    if body is not None:
+        candidates.append(body)
+    for source in candidates:
+        for expression in _iter_expression_candidates(source):
+            parsed = _parse_request_expression(expression)
+            if parsed is None:
+                continue
+            ref_source, pointer = parsed
+            resolved = _resolve_request_expression(previous_case, ref_source, pointer)
+            if resolved is None:
+                continue
+            reference = _step_pointer_reference(previous_step_id, ref_source, pointer)
+            try:
+                marker = json.dumps([reference, resolved], sort_keys=True, default=str)
+            except Exception:
+                marker = f"{reference}:{resolved}"
+            if marker in seen:
+                continue
+            seen.add(marker)
+            pairs.append((resolved, reference))
+    return pairs
+
+
 def _iter_expression_candidates(value):
     if isinstance(value, str):
         yield value
@@ -95,7 +213,7 @@ def _iter_expression_candidates(value):
             yield from _iter_expression_candidates(nested)
 
 
-def _extract_response_expression_pairs(link, response_payload):
+def _extract_response_expression_pairs(link, response_payload, previous_step_id):
     pairs = []
     seen = set()
     candidates = []
@@ -116,14 +234,15 @@ def _extract_response_expression_pairs(link, response_payload):
             pointer = _extract_json_pointer_from_expression(expression)
             if pointer is None:
                 continue
+            reference = _step_pointer_reference(previous_step_id, "responseBody", pointer)
             try:
-                marker = json.dumps([pointer, resolved], sort_keys=True, default=str)
+                marker = json.dumps([reference, resolved], sort_keys=True, default=str)
             except Exception:
-                marker = f"{pointer}:{resolved}"
+                marker = f"{reference}:{resolved}"
             if marker in seen:
                 continue
             seen.add(marker)
-            pairs.append((resolved, pointer))
+            pairs.append((resolved, reference))
     return pairs
 
 
@@ -318,7 +437,17 @@ def _run_stateful_chains(
 ):
     operations = []
     for result in schema.get_all_operations():
-        operations.append(result.ok())
+        if isinstance(result, Ok):
+            operations.append(result.ok())
+        elif isinstance(result, Err):
+            print(
+                f"Warning: skipping OpenAPI operation (load error): {result.err()}",
+                file=sys.stderr,
+            )
+        else:
+            raise RuntimeError(
+                f"unexpected item from schema.get_all_operations(): {type(result)!r}"
+            )
     operations_by_id = _build_operation_id_index(operations)
     operation_by_key = {}
     for op in operations:
@@ -376,7 +505,11 @@ def _run_stateful_chains(
                         context_label=f"linked transition '{previous_operation_id}' -> '{operation_id}'",
                         configure_case=_configure_linked_case,
                     )
-                    derived_pairs = _extract_response_expression_pairs(link, previous_response_payload)
+                    request_pairs = _extract_request_expression_pairs(link, previous_case, previous_operation_id)
+                    response_pairs = _extract_response_expression_pairs(
+                        link, previous_response_payload, previous_operation_id
+                    )
+                    derived_pairs = request_pairs + response_pairs
                     _log_debug(
                         f"[stateful-chain] step={step_idx} transition={previous_operation_id}->{operation_id}",
                         debug=debug,
