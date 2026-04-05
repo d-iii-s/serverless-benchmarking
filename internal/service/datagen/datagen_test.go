@@ -37,7 +37,7 @@ func TestGenerateRequestBodiesData_ReturnsRemovedError(t *testing.T) {
 func TestGenerateStatefulChainsData_RequiresChain(t *testing.T) {
 	ctx := context.Background()
 	specPath := filepath.Join("testdata", "petstore.yaml")
-	_, err := GenerateStatefulChainsData(ctx, specPath, "", "http://localhost:9966/petclinic/api", false)
+	_, err := GenerateStatefulChainsData(ctx, specPath, "", "http://localhost:9966/petclinic/api", false, false)
 	if err == nil {
 		t.Fatal("expected error for missing chain, got nil")
 	}
@@ -58,7 +58,7 @@ func TestGenerateStatefulChainsData_BasicShape(t *testing.T) {
 
 	ctx := context.Background()
 	specPath := filepath.Join("..", "..", "..", "workdir", "spring-petclinic-rest", "openapi.yml")
-	chains, err := GenerateStatefulChainsData(ctx, specPath, "addOwner", "http://localhost:9966/petclinic/api", false)
+	chains, err := GenerateStatefulChainsData(ctx, specPath, "addOwner", "http://localhost:9966/petclinic/api", false, false)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -109,14 +109,14 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 	if minimal[0].Steps[0].PathTemplate != "/owners/{ownerId}" {
 		t.Fatalf("unexpected pathTemplate in projection: %q", minimal[0].Steps[0].PathTemplate)
 	}
-	if minimal[0].Steps[0].PathParams["ownerId"] != "lifecycle.addOwner.responseBody#/id" {
+	if minimal[0].Steps[0].PathParams["ownerId"] != "addOwner.responseBody#/id" {
 		t.Fatalf("unexpected pathParameters in projection: %#v", minimal[0].Steps[0].PathParams)
 	}
 	bodyMap, ok := minimal[0].Steps[0].RequestBody.(map[string]any)
 	if !ok {
 		t.Fatalf("unexpected requestBody type: %#v", minimal[0].Steps[0].RequestBody)
 	}
-	if bodyMap["ownerId"] != "lifecycle.addOwner.requestBody#/owner/id" {
+	if bodyMap["ownerId"] != "addOwner.requestBody#/owner/id" {
 		t.Fatalf("unexpected requestBody in projection: %#v", bodyMap)
 	}
 	raw, err := json.Marshal(minimal[0].Steps[0])
@@ -133,8 +133,8 @@ func TestProjectMinimalIterations_Wrk2ReplayFields(t *testing.T) {
 	if strings.Contains(text, "$response.") {
 		t.Fatalf("unexpected response template in projected output json: %s", text)
 	}
-	if !strings.Contains(text, "lifecycle.addOwner.responseBody#/id") {
-		t.Fatalf("expected stage-scoped json pointer replacement in projected output json: %s", text)
+	if !strings.Contains(text, "addOwner.responseBody#/id") {
+		t.Fatalf("expected step-scoped json pointer replacement in projected output json: %s", text)
 	}
 }
 

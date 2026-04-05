@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/d-iii-s/slsbench/internal/service/datagen"
 	"github.com/d-iii-s/slsbench/internal/service/flowgen"
@@ -27,6 +29,81 @@ func TestRunWithGenerator_RequiresFlowPath(t *testing.T) {
 	err := runWithGenerator(context.Background(), " ", "unused", outDir, 9966, generate, false)
 	if err == nil {
 		t.Fatal("expected error for empty flow path")
+	}
+}
+
+func TestRunWithManagedDocker_RequiresInputs(t *testing.T) {
+	err := runWithManagedDocker(context.Background(), "", "svc", 8080, false, func(context.Context) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for empty docker compose path")
+	}
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "", 8080, false, func(context.Context) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for empty service name")
+	}
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 0, false, func(context.Context) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for invalid port")
+	}
+}
+
+func TestRunWithManagedDocker_ReadinessErrorRunsCleanup(t *testing.T) {
+	origStart := startComposeForProbeFn
+	origWait := waitForHTTPReadyFn
+	defer func() {
+		startComposeForProbeFn = origStart
+		waitForHTTPReadyFn = origWait
+	}()
+
+	cleanupCalled := 0
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error) {
+		return func(context.Context) error {
+			cleanupCalled++
+			return nil
+		}, nil
+	}
+	waitForHTTPReadyFn = func(ctx context.Context, url string, timeout, interval time.Duration) error {
+		return errors.New("timeout")
+	}
+
+	runCalled := 0
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 8080, false, func(context.Context) error {
+		runCalled++
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected readiness error")
+	}
+	if cleanupCalled != 1 {
+		t.Fatalf("expected cleanup to run once, got %d", cleanupCalled)
+	}
+	if runCalled != 0 {
+		t.Fatalf("expected probe runner not to execute, got %d", runCalled)
+	}
+}
+
+func TestRunWithManagedDocker_CleanupErrorIsReturned(t *testing.T) {
+	origStart := startComposeForProbeFn
+	origWait := waitForHTTPReadyFn
+	defer func() {
+		startComposeForProbeFn = origStart
+		waitForHTTPReadyFn = origWait
+	}()
+
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error) {
+		return func(context.Context) error {
+			return errors.New("down failed")
+		}, nil
+	}
+	waitForHTTPReadyFn = func(ctx context.Context, url string, timeout, interval time.Duration) error {
+		return nil
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 8080, false, func(context.Context) error {
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "failed to tear down compose project") {
+		t.Fatalf("expected teardown error, got %v", err)
 	}
 }
 

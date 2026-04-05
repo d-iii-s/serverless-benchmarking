@@ -41,23 +41,32 @@ func (e EventProcessor) Done(operation string, success bool) {
 }
 
 func setupDockerCompose() api.Compose {
+	compose, err := NewComposeService()
+	if err != nil {
+		log.Panicf("Error creating compose composeService: %v", err)
+	}
+	return compose
+}
+
+// NewComposeService creates and initializes a Docker Compose service client.
+func NewComposeService() (api.Compose, error) {
 	// setup docker client
 	dockerCLI, err := command.NewDockerCli()
 	if err != nil {
-		log.Panicf("Error creating docker CLI: %v", err)
+		return nil, fmt.Errorf("error creating docker CLI: %w", err)
 	}
 
 	if err := dockerCLI.Initialize(&flags.ClientOptions{}); err != nil {
-		log.Fatalf("Failed to initialize docker CLI: %v", err)
+		return nil, fmt.Errorf("failed to initialize docker CLI: %w", err)
 	}
 
 	// compose client
 	compose, err := compose.NewComposeService(dockerCLI, compose.WithEventProcessor(newEventProcessor()))
 	if err != nil {
-		log.Panicf("Error creating compose composeService: %v", err)
+		return nil, fmt.Errorf("error creating compose composeService: %w", err)
 	}
 
-	return compose
+	return compose, nil
 }
 
 func Run(ctx context.Context, scenarioPath, resultPath, dockerComposePath, serviceName string, port int, collectPaths []string, specPath string) {

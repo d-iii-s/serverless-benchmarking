@@ -5,24 +5,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/d-iii-s/slsbench/internal/service/datagen"
 	"github.com/d-iii-s/slsbench/internal/service/flowgen"
+	"github.com/d-iii-s/slsbench/internal/service/harness"
 	utils "github.com/d-iii-s/slsbench/internal/utils"
+	"github.com/docker/compose/v5/pkg/api"
 	"golang.org/x/sync/errgroup"
 )
 
 const (
 	defaultBasePathPrefix = "/petclinic/api"
+	defaultReadyPath      = "/owners"
+	defaultReadyTimeout   = 120 * time.Second
+	defaultReadyInterval  = 1 * time.Second
 	maxDebugPayloadChars  = 1600
 	debugTruncatedSuffix  = "...<truncated>"
 )
 
 type generateChainsFn func(ctx context.Context, openAPILink, chain, baseURL string, debug bool) ([]datagen.StatefulChain, error)
+type composeStarterFn func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error)
+type readinessWaitFn func(ctx context.Context, url string, timeout, interval time.Duration) error
+
+var (
+	startComposeForProbeFn composeStarterFn = startComposeForProbe
+	waitForHTTPReadyFn     readinessWaitFn  = waitForHTTPReady
+)
 
 type probeStats struct {
 	generatedChains int
@@ -34,8 +49,170 @@ type probeStats struct {
 
 // Run probes generated request bodies against a running localhost app until
 // enough 2xx-accepted bodies are collected for each body-bearing node.
-func Run(ctx context.Context, flowPath, openAPILink, outputPath string, port int, debug bool) error {
-	return runWithGeneratorAndWorkdir(ctx, flowPath, openAPILink, outputPath, port, datagen.GenerateStatefulChainsData, debug)
+func Run(
+	ctx context.Context,
+	flowPath, openAPILink, outputPath, dockerComposePath, serviceName string,
+	port int,
+	debug bool,
+	noRewriteLinkedValues bool,
+) error {
+	return runWithManagedDocker(ctx, dockerComposePath, serviceName, port, debug, func(runCtx context.Context) error {
+		generateFn := func(
+			generateCtx context.Context,
+			generateOpenAPILink, chain, baseURL string,
+			generateDebug bool,
+		) ([]datagen.StatefulChain, error) {
+			return datagen.GenerateStatefulChainsData(
+				generateCtx,
+				generateOpenAPILink,
+				chain,
+				baseURL,
+				generateDebug,
+				noRewriteLinkedValues,
+			)
+		}
+		return runWithGeneratorAndWorkdir(runCtx, flowPath, openAPILink, outputPath, port, generateFn, debug)
+	})
+}
+
+func runWithManagedDocker(
+	ctx context.Context,
+	dockerComposePath, serviceName string,
+	port int,
+	debug bool,
+	runFn func(context.Context) error,
+) error {
+	if strings.TrimSpace(dockerComposePath) == "" {
+		return fmt.Errorf("docker compose path must be non-empty")
+	}
+	if strings.TrimSpace(serviceName) == "" {
+		return fmt.Errorf("service name must be non-empty")
+	}
+	if port <= 0 {
+		return fmt.Errorf("port must be positive, got %d", port)
+	}
+	if runFn == nil {
+		return fmt.Errorf("run function must be provided")
+	}
+
+	teardown, err := startComposeForProbeFn(ctx, dockerComposePath, serviceName, debug)
+	if err != nil {
+		return err
+	}
+
+	readinessURL := fmt.Sprintf("http://localhost:%d%s%s", port, defaultBasePathPrefix, defaultReadyPath)
+	if err := waitForHTTPReadyFn(ctx, readinessURL, defaultReadyTimeout, defaultReadyInterval); err != nil {
+		_ = teardown(context.Background())
+		return fmt.Errorf("service did not become ready at %s: %w", readinessURL, err)
+	}
+
+	runErr := runFn(ctx)
+	downErr := teardown(context.Background())
+	if runErr != nil {
+		if downErr != nil {
+			return fmt.Errorf("probe failed: %w; additionally failed to tear down compose project: %v", runErr, downErr)
+		}
+		return runErr
+	}
+	if downErr != nil {
+		return fmt.Errorf("failed to tear down compose project: %w", downErr)
+	}
+	return nil
+}
+
+func startComposeForProbe(
+	ctx context.Context,
+	dockerComposePath, serviceName string,
+	debug bool,
+) (func(context.Context) error, error) {
+	composeService, err := harness.NewComposeService()
+	if err != nil {
+		return nil, err
+	}
+
+	projectName := fmt.Sprintf("probe-bodies-%d", time.Now().UnixNano())
+	project, err := composeService.LoadProject(ctx, api.ProjectLoadOptions{
+		ConfigPaths: []string{dockerComposePath},
+		ProjectName: projectName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to load compose project from %q: %w", dockerComposePath, err)
+	}
+	if len(project.Services) == 0 {
+		return nil, fmt.Errorf("compose project %q has no services", projectName)
+	}
+	if !containsComposeService(project, serviceName) {
+		return nil, fmt.Errorf("compose service %q is not defined in %q", serviceName, dockerComposePath)
+	}
+
+	if err := composeService.Create(ctx, project, api.CreateOptions{}); err != nil {
+		return nil, fmt.Errorf("failed to create compose project %q: %w", projectName, err)
+	}
+	if err := composeService.Start(ctx, projectName, api.StartOptions{Project: project}); err != nil {
+		return nil, fmt.Errorf("failed to start compose project %q: %w", projectName, err)
+	}
+	if debug {
+		fmt.Printf("[probe-bodies] started compose project=%s service=%s\n", projectName, serviceName)
+	}
+
+	return func(cleanupCtx context.Context) error {
+		if debug {
+			fmt.Printf("[probe-bodies] stopping compose project=%s\n", projectName)
+		}
+		return composeService.Down(cleanupCtx, projectName, api.DownOptions{Project: project})
+	}, nil
+}
+
+func containsComposeService(project *types.Project, serviceName string) bool {
+	for _, svc := range project.Services {
+		if svc.Name == serviceName {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForHTTPReady(ctx context.Context, url string, timeout, interval time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultReadyTimeout
+	}
+	if interval <= 0 {
+		interval = defaultReadyInterval
+	}
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	tryOnce := func() bool {
+		req, err := http.NewRequestWithContext(deadlineCtx, http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode >= 200 && resp.StatusCode < 500
+	}
+
+	if tryOnce() {
+		return nil
+	}
+
+	for {
+		select {
+		case <-deadlineCtx.Done():
+			return fmt.Errorf("timeout after %s", timeout)
+		case <-ticker.C:
+			if tryOnce() {
+				return nil
+			}
+		}
+	}
 }
 
 func runWithGeneratorAndWorkdir(

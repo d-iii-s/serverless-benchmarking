@@ -56,19 +56,17 @@ var (
 	harnessCollectPaths      []string
 
 	// Probe command flags
-	probeFlowPath    string
-	probeOpenAPILink string
-	probeOutputPath  string
-	probePort        int
-	probeDebug       bool
+	probeFlowPath          string
+	probeOpenAPILink       string
+	probeOutputPath        string
+	probeDockerComposePath string
+	probeServiceName       string
+	probePort              int
+	probeDebug             bool
+	probeNoRewriteLinked   bool
 )
 
 func init() {
-	// todo: reuse generated data option
-	// check data against SPRING-REST
-	// lua scripts should be updated
-	// data generation can be separate program
-
 	// Harness flags
 	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "", "Path to the scenario file")
 	if err := harnessCmd.MarkFlagRequired("scenario-path"); err != nil {
@@ -112,11 +110,27 @@ func init() {
 		log.Fatalf("Failed to mark --output-path as required: %v", err)
 	}
 
+	probeBodiesCmd.Flags().StringVarP(&probeDockerComposePath, "docker-compose-path", "d", "", "Path to the docker-compose.yml file for benchmark application")
+	if err := probeBodiesCmd.MarkFlagRequired("docker-compose-path"); err != nil {
+		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeServiceName, "service-name", "n", "", "Service name in docker-compose to probe")
+	if err := probeBodiesCmd.MarkFlagRequired("service-name"); err != nil {
+		log.Fatalf("Failed to mark --service-name as required: %v", err)
+	}
+
 	probeBodiesCmd.Flags().IntVarP(&probePort, "port", "p", 8080, "Local running service port to probe")
 	if err := probeBodiesCmd.MarkFlagRequired("port"); err != nil {
 		log.Fatalf("Failed to mark --port as required: %v", err)
 	}
 	probeBodiesCmd.Flags().BoolVar(&probeDebug, "debug", false, "Enable detailed probe debug logs")
+	probeBodiesCmd.Flags().BoolVar(
+		&probeNoRewriteLinked,
+		"no-rewrite-linked-values",
+		false,
+		"Disable replacing linked values with JSON pointers in generated output",
+	)
 
 	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
@@ -185,14 +199,29 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 	if probePort <= 0 {
 		return fmt.Errorf("the --port flag must be a positive integer")
 	}
+	if probeDockerComposePath == "" {
+		return fmt.Errorf("the --docker-compose-path flag must be provided")
+	}
+	if probeServiceName == "" {
+		return fmt.Errorf("the --service-name flag must be provided")
+	}
 	if err := runValidateDSL(probeFlowPath); err != nil {
 		return fmt.Errorf("flow file validation failed: %w", err)
 	}
-	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s port=%d",
-		probeFlowPath, probeOpenAPILink, probeOutputPath, probePort)
-	log.Printf("Note: service lifecycle is unmanaged in probe-bodies; expected running at localhost:%d", probePort)
+	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s service=%s port=%d no-rewrite-linked-values=%t",
+		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeServiceName, probePort, probeNoRewriteLinked)
 
-	if err := bodyprobe.Run(ctx, probeFlowPath, probeOpenAPILink, probeOutputPath, probePort, probeDebug); err != nil {
+	if err := bodyprobe.Run(
+		ctx,
+		probeFlowPath,
+		probeOpenAPILink,
+		probeOutputPath,
+		probeDockerComposePath,
+		probeServiceName,
+		probePort,
+		probeDebug,
+		probeNoRewriteLinked,
+	); err != nil {
 		return err
 	}
 	return nil

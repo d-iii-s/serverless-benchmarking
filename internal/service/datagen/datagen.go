@@ -17,8 +17,8 @@ import (
 const scriptRelPath = "scripts/generate_bodies.py"
 
 var (
-	stepScopedRefPattern      = regexp.MustCompile(`^[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
-	stageScopedRefPattern     = regexp.MustCompile(`^[^.]+\.[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
+	stepScopedRefPattern  = regexp.MustCompile(`^[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
+	stageScopedRefPattern = regexp.MustCompile(`^[^.]+\.[^.]+\.(endpoint|headers|query|requestBody|responseBody)#/.*$`)
 )
 
 type StatefulStep struct {
@@ -119,52 +119,18 @@ func prefixStageScopedReferences(value any, stage string) any {
 		return out
 	case string:
 		if stageScopedRefPattern.MatchString(v) {
+			if strings.HasPrefix(v, stage+".") {
+				return strings.TrimPrefix(v, stage+".")
+			}
 			return v
 		}
 		if stepScopedRefPattern.MatchString(v) {
-			return stage + "." + v
+			return v
 		}
 		return v
 	default:
 		return value
 	}
-}
-
-// GenerateRequestBodies invokes the Schemathesis-based Python script to
-// generate random request bodies for the given OpenAPI endpoint and writes
-// the result (a JSON array) to outputPath.
-//
-// Parameters:
-//   - specPath:   path to the OpenAPI specification file (YAML or JSON)
-//   - endpoint:   API endpoint path, e.g. "/pets"
-//   - method:     HTTP method, e.g. "POST"
-//   - count:      number of request bodies to generate (must be > 0)
-//   - outputPath: file path where the JSON array of bodies will be written
-func GenerateRequestBodies(ctx context.Context, specPath, endpoint, method string, count int, outputPath string) error {
-	bodies, err := GenerateRequestBodiesData(ctx, specPath, endpoint, method, count)
-	if err != nil {
-		return err
-	}
-
-	data, err := json.MarshalIndent(bodies, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal generated bodies: %w", err)
-	}
-	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
-		return fmt.Errorf("failed to write generated bodies to %q: %w", outputPath, err)
-	}
-	return nil
-}
-
-// GenerateRequestBodiesData invokes the Schemathesis-based Python script and
-// returns generated request bodies as in-memory objects.
-func GenerateRequestBodiesData(ctx context.Context, openAPILink, endpoint, method string, count int) ([]map[string]any, error) {
-	_ = ctx
-	_ = openAPILink
-	_ = endpoint
-	_ = method
-	_ = count
-	return nil, fmt.Errorf("per-operation body generation is removed; use GenerateStatefulChainsData")
 }
 
 // GenerateStatefulChainsData runs Schemathesis stateful mode and returns
@@ -175,6 +141,7 @@ func GenerateStatefulChainsData(
 	chain string,
 	baseURL string,
 	debug bool,
+	noRewriteLinkedValues bool,
 ) ([]StatefulChain, error) {
 	if !isRemoteOpenAPILink(openAPILink) {
 		if _, err := os.Stat(openAPILink); err != nil {
@@ -210,6 +177,9 @@ func GenerateStatefulChainsData(
 	}
 	if debug {
 		args = append(args, "--debug")
+	}
+	if noRewriteLinkedValues {
+		args = append(args, "--no-rewrite-linked-values")
 	}
 	cmd := exec.CommandContext(ctx, "python3", args...)
 	output, err := cmd.CombinedOutput()
