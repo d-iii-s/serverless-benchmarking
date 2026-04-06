@@ -31,7 +31,7 @@ const (
 )
 
 type generateChainsFn func(ctx context.Context, openAPILink, chain, baseURL string, debug bool) ([]datagen.StatefulChain, error)
-type composeStarterFn func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error)
+type composeStarterFn func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error)
 type readinessWaitFn func(ctx context.Context, url string, timeout, interval time.Duration) error
 
 var (
@@ -51,12 +51,12 @@ type probeStats struct {
 // enough 2xx-accepted bodies are collected for each body-bearing node.
 func Run(
 	ctx context.Context,
-	flowPath, openAPILink, outputPath, dockerComposePath, serviceName string,
+	flowPath, openAPILink, outputPath, dockerComposePath, dockerSocketPath, serviceName string,
 	port int,
 	debug bool,
 	noRewriteLinkedValues bool,
 ) error {
-	return runWithManagedDocker(ctx, dockerComposePath, serviceName, port, debug, func(runCtx context.Context) error {
+	return runWithManagedDocker(ctx, dockerComposePath, dockerSocketPath, serviceName, port, debug, func(runCtx context.Context) error {
 		generateFn := func(
 			generateCtx context.Context,
 			generateOpenAPILink, chain, baseURL string,
@@ -77,7 +77,7 @@ func Run(
 
 func runWithManagedDocker(
 	ctx context.Context,
-	dockerComposePath, serviceName string,
+	dockerComposePath, dockerSocketPath, serviceName string,
 	port int,
 	debug bool,
 	runFn func(context.Context) error,
@@ -88,6 +88,12 @@ func runWithManagedDocker(
 	if strings.TrimSpace(serviceName) == "" {
 		return fmt.Errorf("service name must be non-empty")
 	}
+	if strings.TrimSpace(dockerSocketPath) == "" {
+		return fmt.Errorf("docker socket path must be non-empty")
+	}
+	if err := validateReadableFile(dockerSocketPath); err != nil {
+		return fmt.Errorf("invalid docker socket path %q: %w", dockerSocketPath, err)
+	}
 	if port <= 0 {
 		return fmt.Errorf("port must be positive, got %d", port)
 	}
@@ -95,7 +101,7 @@ func runWithManagedDocker(
 		return fmt.Errorf("run function must be provided")
 	}
 
-	teardown, err := startComposeForProbeFn(ctx, dockerComposePath, serviceName, debug)
+	teardown, err := startComposeForProbeFn(ctx, dockerComposePath, dockerSocketPath, serviceName, debug)
 	if err != nil {
 		return err
 	}
@@ -122,10 +128,10 @@ func runWithManagedDocker(
 
 func startComposeForProbe(
 	ctx context.Context,
-	dockerComposePath, serviceName string,
+	dockerComposePath, dockerSocketPath, serviceName string,
 	debug bool,
 ) (func(context.Context) error, error) {
-	composeService, err := harness.NewComposeService()
+	composeService, err := harness.NewComposeServiceWithDockerHost(harness.DockerHostFromSocketPath(dockerSocketPath))
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +176,17 @@ func containsComposeService(project *types.Project, serviceName string) bool {
 		}
 	}
 	return false
+}
+
+func validateReadableFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%q is a directory", path)
+	}
+	return nil
 }
 
 func waitForHTTPReady(ctx context.Context, url string, timeout, interval time.Duration) error {
@@ -222,7 +239,7 @@ func runWithGeneratorAndWorkdir(
 	generateFn generateChainsFn,
 	debug bool,
 ) error {
-	runDir, err := utils.CreateResultSubdir(outputBasePath)
+	runDir, err := utils.CreateResultSubdirWithPrefix(outputBasePath, "probe-bodies-result")
 	if err != nil {
 		return fmt.Errorf("failed to create probe result directory: %w", err)
 	}

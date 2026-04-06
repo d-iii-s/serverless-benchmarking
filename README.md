@@ -195,82 +195,73 @@ The scenario file is saved with a timestamp:
 
 ### Step 3: Run Benchmark Harness
 
-The `harness` command orchestrates the complete benchmark execution using Docker Compose and wrk2.
+The `harness` command orchestrates benchmark execution using flow stages,
+`probe-bodies` generated iterations, Docker Compose, and `wrk2-flow` containers.
 
 #### Basic Usage
 
 ```bash
 slsbench harness \
-  -s ./scenarios/scenario-*.json \
-  -n myapp \
-  -d ./docker-compose.yml \
-  -p 8080 \
-  -r ./results
+  --flow-path ./workdir/spring-petclinic-rest/flow.yaml \
+  --probe-bodies-path ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
+  --openapi-spec-path ./workdir/spring-petclinic-rest/openapi.yml \
+  --docker-compose-path ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  --service-name petclinic \
+  --port 9966 \
+  --result-path ./workdir/spring-petclinic-rest/results \
+  --service-mount-path /var/log/app \
+  --docker-socket-path /var/run/docker.sock
 ```
 
 #### Flags
 
-- `-s, --scenario-path`: Path to the scenario file (default: `./scenario.json`)
-- `-n, --service-name` (required): Name of the service in docker-compose.yml to benchmark
-- `-d, --docker-compose-path`: Path to docker-compose.yml file (default: `./docker-compose.yml`)
-- `-p, --port`: Port number for the service (default: `8080`)
-- `-r, --result-path`: Directory to save benchmark results (default: `./result`)
-- `-w, --wrk2params`: wrk2 parameters (default: `-t2 -c100 -d30s -R2000`)
-- `-c, --collect-paths`: Paths inside the service container to copy to results (comma-separated)
+- `-f, --flow-path` (required): Flow DSL YAML path.
+- `-b, --probe-bodies-path` (required): Path to `probe-bodies` output root (contains `<stage>/iteration-*.json`).
+- `-o, --openapi-spec-path` (required): OpenAPI spec path.
+- `-d, --docker-compose-path` (required): Application docker-compose path.
+- `-n, --service-name` (required): Service name in docker-compose.
+- `-p, --port`: Service port inside Docker network (default: `8080`).
+- `-r, --result-path`: Base output path (a timestamped run directory is created inside it).
+- `-m, --service-mount-path`: Optional paths inside service container to copy to results (repeat `-m` or use comma-separated values).
+- `--docker-socket-path`: Docker socket path for DooD mode (default: `/var/run/docker.sock`).
 
 #### What It Does
 
-1. Creates a workload container with wrk2
-2. Starts your service using Docker Compose
-3. Connects the workload container to the service network
-4. Runs benchmark tests against all endpoints in the scenario
-5. Collects performance metrics:
-   - Container statistics (CPU, memory)
-   - RSS (Resident Set Size) information
-   - First request latency
-6. Copies specified paths from the service container to results (if `--collect-paths` is used)
-   - wrk2 benchmark results
-6. Saves all results to the specified directory
-7. Cleans up containers and networks
-
-#### wrk2 Parameters
-
-Common wrk2 parameters you can customize:
-
-- `-t`: Number of threads (e.g., `-t4`)
-- `-c`: Number of connections (e.g., `-c200`)
-- `-d`: Duration (e.g., `-d60s`, `-d5m`)
-- `-R`: Request rate per second (e.g., `-R5000`)
+1. Starts your service with Docker Compose.
+2. Measures time to first successful response and writes `first_request_result.json`.
+3. For each flow stage, starts one dedicated `wrk2-flow` container run.
+4. Forces `wrk2` latency histogram output via `--latency`.
+5. Mounts stage probe data into the benchmark container and saves stage-level wrk output artifacts.
+6. Optionally copies one or more mounted paths from the service container to results.
+7. Always tears down compose resources.
 
 #### Example
 
 ```bash
-# Run benchmark with default settings
+# Run benchmark from probe-bodies generated iterations
 slsbench harness \
-  -s ./scenarios/scenario-2025-01-15-14:35:12.json \
-  -n myapp \
-  -p 8080
-
-# Run benchmark with custom wrk2 parameters
-slsbench harness \
-  -s ./scenarios/scenario-2025-01-15-14:35:12.json \
-  -n myapp \
-  -d ./docker-compose.yml \
-  -p 8080 \
-  -w "-t4 -c200 -d60s -R5000" \
-  -r ./benchmark-results
+  -f ./workdir/spring-petclinic-rest/flow.yaml \
+  -b ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
+  -o ./workdir/spring-petclinic-rest/openapi.yml \
+  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  -n petclinic \
+  -p 9966 \
+  -r ./workdir/spring-petclinic-rest/results
 
 # Run benchmark and collect logs/metrics from the service container
 slsbench harness \
-  -s ./scenarios/scenario-2025-01-15-14:35:12.json \
+  -f ./flow.yaml \
+  -b ./result-probe/result-2026-04-03-14:45:00 \
+  -o ./openapi.yml \
+  -d ./docker-compose.yml \
   -n myapp \
   -p 8080 \
-  -c /var/log/app,/tmp/metrics,/app/logs
+  -m /var/log/app
 ```
 
 #### Collecting Files from Service Container
 
-Use the `--collect-paths` (`-c`) flag to copy files or directories from the service container to your results folder after the benchmark completes. This is useful for:
+Use `--service-mount-path` (`-m`) to copy one or more files/directories from the service container to your results folder after benchmark completion. This is useful for:
 
 - Application logs
 - JFR (Java Flight Recorder) recordings
@@ -278,17 +269,17 @@ Use the `--collect-paths` (`-c`) flag to copy files or directories from the serv
 - Debug output
 - Profiling data
 
-The paths are comma-separated and should be absolute paths inside the container:
+Paths should be absolute paths inside the container:
 
 ```bash
 # Collect application logs
-slsbench harness -n myapp -c /var/log/app
+slsbench harness -n myapp -m /var/log/app
 
 # Collect multiple paths
-slsbench harness -n myapp -c /var/log/app,/tmp/metrics,/app/profiling
+slsbench harness -n myapp -m /var/log/app -m /tmp/metrics
 
 # Collect JFR recordings
-slsbench harness -n myapp -c /tmp/recording.jfr
+slsbench harness -n myapp -m /tmp/recording.jfr
 ```
 
 Collected files are saved in a `collected/` subdirectory within the results folder.
@@ -296,13 +287,13 @@ Collected files are saved in a `collected/` subdirectory within the results fold
 #### Output
 
 Results are saved in a timestamped directory:
-- Format: `result-YYYY-MM-DD-HH:MM:SS/`
+- Probe output format: `probe-bodies-result-YYYY-MM-DD-HH:MM:SS/`
+- Harness output format: `harness-result-YYYY-MM-DD-HH:MM:SS/`
 - Contents:
-  - `container-stats.csv`: Container resource usage over time
-  - `rss_info.json`: Memory usage information
   - `first_request_result.json`: First request latency data
-  - `wrk2_results_*.txt`: Detailed wrk2 benchmark output
-  - `collected/`: Files copied from the service container (if `--collect-paths` was used)
+  - `wrk2-input/<stage>/<stage>/iteration-*.json`: Stage input data used for one run per stage
+  - `wrk2-results/<stage>/`: wrk output files and container logs for each stage
+  - `collected/`: Files copied from service container (if `--service-mount-path` was used)
 
 ### Complete Workflow Example
 
@@ -312,22 +303,27 @@ Here's a complete example from start to finish:
 # 1. Enrich your OpenAPI specification
 slsbench enrich -s ./api/openapi.yaml -o ./enriched
 
-# 2. Generate scenario from enriched spec
-slsbench scenario \
-  -s ./enriched/enriched-spec-2025-01-15-14:30:45.yaml \
-  -o ./scenarios
+# 2. Generate probe-bodies data
+slsbench probe-bodies \
+  -f ./workdir/spring-petclinic-rest/flow.yaml \
+  -o ./workdir/spring-petclinic-rest/openapi.yml \
+  -r ./workdir/spring-petclinic-rest \
+  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  -n petclinic \
+  -p 9966
 
-# 3. Run benchmark
+# 3. Run harness benchmark
 slsbench harness \
-  -s ./scenarios/scenario-2025-01-15-14:35:12.json \
-  -n myapp \
-  -d ./docker-compose.yml \
-  -p 8080 \
-  -w "-t2 -c100 -d30s -R2000" \
+  -f ./workdir/spring-petclinic-rest/flow.yaml \
+  -b ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
+  -o ./workdir/spring-petclinic-rest/openapi.yml \
+  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  -n petclinic \
+  -p 9966 \
   -r ./results
 
 # 4. Check results
-ls -la ./results/result-*/
+ls -la ./results/harness-result-*/
 ```
 
 ### Docker Compose Requirements
@@ -350,6 +346,55 @@ services:
     environment:
       - PORT=8080
 ```
+
+### Run in Docker (DooD)
+
+You can run the full `slsbench` CLI in a container and still control the host Docker daemon by mounting the Docker socket (Docker-out-of-Docker pattern).
+
+#### Build the Image
+
+```bash
+docker build -t slsbench:dood .
+```
+
+#### Probe-Bodies in DooD
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  slsbench:dood probe-bodies \
+  --flow-path /workspace/workdir/spring-petclinic-rest/flow.yaml \
+  --openapi-link /workspace/workdir/spring-petclinic-rest/openapi.yml \
+  --output-path /workspace/workdir/spring-petclinic-rest \
+  --docker-compose-path /workspace/workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  --service-name petclinic \
+  --port 9966 \
+  --docker-socket-path /var/run/docker.sock
+```
+
+#### Harness in DooD
+
+```bash
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$(pwd)":/workspace \
+  -w /workspace \
+  slsbench:dood harness \
+  --flow-path /workspace/workdir/spring-petclinic-rest/flow.yaml \
+  --probe-bodies-path /workspace/workdir/spring-petclinic-rest/probe-bodies-result-2026-04-03-14:45:00 \
+  --openapi-spec-path /workspace/workdir/spring-petclinic-rest/openapi.yml \
+  --docker-compose-path /workspace/workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
+  --service-name petclinic \
+  --port 9966 \
+  --result-path /workspace/workdir/spring-petclinic-rest/results \
+  --docker-socket-path /var/run/docker.sock
+```
+
+Required mounts:
+- Docker socket (`/var/run/docker.sock`) from host to container.
+- Project/workdir directory that contains `flow`, OpenAPI spec, compose file, and output directories.
 
 ### Troubleshooting
 

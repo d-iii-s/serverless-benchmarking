@@ -22,18 +22,26 @@ var rootCmd = &cobra.Command{
 
 var harnessCmd = &cobra.Command{
 	Use:   "harness",
-	Short: "Run benchmark harness against a service using a scenario file",
-	Long: `Run benchmark harness against a service using a scenario file.
+	Short: "Run flow-driven benchmark harness against a service",
+	Long: `Run benchmark harness against a service using flow stages and
+probe-bodies generated iterations.
 
 This command orchestrates the benchmark execution by:
 - Starting the service using Docker Compose
-- Running workload tests using wrk2
-- Collecting performance metrics
-- Copying specified paths from the service container to results
+- Measuring first successful response time
+- Running wrk2-flow workloads per flow step
+- Copying an optional mounted path from the service container to results
 - Cleaning up resources`,
-	Example: `  slsbench harness -scenario-path ./scenario.json -service-name myapp -port 8080
-  slsbench harness -scenario-path ./scenario.json -service-name myapp -wrk2params "-t4 -c200 -d60s -R5000"
-  slsbench harness -s ./scenario.json -n myapp -c /var/log/app,/tmp/metrics`,
+	Example: `  slsbench harness \
+    --flow-path ./flow.yaml \
+    --probe-bodies-path ./result-probe/result-2026-04-03-14:45:00 \
+    --openapi-spec-path ./openapi.yml \
+    --docker-compose-path ./docker-compose.yml \
+    --service-name petclinic \
+    --port 9966 \
+    --result-path ./result \
+    --service-mount-path /var/log/app \
+    --docker-socket-path /var/run/docker.sock`,
 	RunE: runHarness,
 }
 
@@ -47,19 +55,23 @@ them against the running application, then persist accepted chain artifacts.`,
 
 var (
 	// Harness flags
-	harnessScenarioPath      string
+	harnessFlowPath          string
+	harnessProbeBodiesPath   string
 	openApiSpecPath          string
 	harnessPort              int
 	harnessResultPath        string
 	harnessDockerComposePath string
 	harnessServiceName       string
-	harnessCollectPaths      []string
+	harnessServiceMountPaths []string
+	harnessDockerSocketPath  string
+	harnessDebugNon2xx       bool
 
 	// Probe command flags
 	probeFlowPath          string
 	probeOpenAPILink       string
 	probeOutputPath        string
 	probeDockerComposePath string
+	probeDockerSocketPath  string
 	probeServiceName       string
 	probePort              int
 	probeDebug             bool
@@ -68,17 +80,22 @@ var (
 
 func init() {
 	// Harness flags
-	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "", "Path to the scenario file")
-	if err := harnessCmd.MarkFlagRequired("scenario-path"); err != nil {
-		log.Fatalf("Failed to mark --scenario-path as required: %v", err)
+	harnessCmd.Flags().StringVarP(&harnessFlowPath, "flow-path", "f", "", "Path to the flow DSL YAML file")
+	if err := harnessCmd.MarkFlagRequired("flow-path"); err != nil {
+		log.Fatalf("Failed to mark --flow-path as required: %v", err)
 	}
 
-	harnessCmd.Flags().StringVarP(&openApiSpecPath, "openapi-spec-path", "o", "", "Path to the OpenAPI spec file (optional)")
+	harnessCmd.Flags().StringVarP(&harnessProbeBodiesPath, "probe-bodies-path", "b", "", "Path to probe-bodies result root containing stage iteration files")
+	if err := harnessCmd.MarkFlagRequired("probe-bodies-path"); err != nil {
+		log.Fatalf("Failed to mark --probe-bodies-path as required: %v", err)
+	}
+
+	harnessCmd.Flags().StringVarP(&openApiSpecPath, "openapi-spec-path", "o", "", "Path to the OpenAPI spec file")
 	if err := harnessCmd.MarkFlagRequired("openapi-spec-path"); err != nil {
 		log.Fatalf("Failed to mark --openapi-spec-path as required: %v", err)
 	}
 
-	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Local port  for the benchmark harness to use")
+	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Application service port inside docker network")
 
 	harnessCmd.Flags().StringVarP(&harnessResultPath, "result-path", "r", "./result", "Path to save the results")
 
@@ -92,7 +109,9 @@ func init() {
 		log.Fatalf("Failed to mark --service-name as required: %v", err)
 	}
 
-	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
+	harnessCmd.Flags().StringSliceVarP(&harnessServiceMountPaths, "service-mount-path", "m", []string{}, "Optional paths inside service container to copy to results (repeat flag or use comma-separated values)")
+	harnessCmd.Flags().StringVar(&harnessDockerSocketPath, "docker-socket-path", "/var/run/docker.sock", "Path to Docker socket for DooD mode")
+	harnessCmd.Flags().BoolVar(&harnessDebugNon2xx, "debug-non2xx", false, "Enable FLOW_DEBUG_NON2XX=1 in wrk2 container for non-2xx debug capture")
 
 	// Probe-bodies flags
 	probeBodiesCmd.Flags().StringVarP(&probeFlowPath, "flow-path", "f", "", "Path to flow DSL YAML file")
@@ -114,6 +133,7 @@ func init() {
 	if err := probeBodiesCmd.MarkFlagRequired("docker-compose-path"); err != nil {
 		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
 	}
+	probeBodiesCmd.Flags().StringVar(&probeDockerSocketPath, "docker-socket-path", "/var/run/docker.sock", "Path to Docker socket for DooD mode")
 
 	probeBodiesCmd.Flags().StringVarP(&probeServiceName, "service-name", "n", "", "Service name in docker-compose to probe")
 	if err := probeBodiesCmd.MarkFlagRequired("service-name"); err != nil {
@@ -178,19 +198,26 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("the --port flag must be a positive integer")
 	}
 
-	err := runValidateDSL(harnessScenarioPath)
-	if err != nil {
-		log.Fatalf("Scenario file validation failed: %v", err)
+	if err := runValidateDSL(harnessFlowPath); err != nil {
+		return fmt.Errorf("flow file validation failed: %w", err)
 	}
 
-	log.Printf("Running harness: scenario=%s result=%s docker-compose=%s port=%d service=%s",
-		harnessScenarioPath, harnessResultPath, harnessDockerComposePath, harnessPort, harnessServiceName)
-	if len(harnessCollectPaths) > 0 {
-		log.Printf("Will collect paths from service container: %v", harnessCollectPaths)
-	}
+	log.Printf("Running harness: flow=%s probe-bodies=%s openapi=%s result=%s docker-compose=%s service=%s port=%d docker-socket=%s service-mount-paths=%v debug-non2xx=%t",
+		harnessFlowPath, harnessProbeBodiesPath, openApiSpecPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessDockerSocketPath, harnessServiceMountPaths, harnessDebugNon2xx)
 
-	harness.Run(ctx, harnessScenarioPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths, openApiSpecPath)
-	return nil
+	return harness.Run(
+		ctx,
+		harnessFlowPath,
+		harnessResultPath,
+		openApiSpecPath,
+		harnessDockerComposePath,
+		harnessServiceName,
+		harnessPort,
+		harnessServiceMountPaths,
+		harnessProbeBodiesPath,
+		harnessDockerSocketPath,
+		harnessDebugNon2xx,
+	)
 }
 
 func runProbeBodies(cmd *cobra.Command, args []string) error {
@@ -208,8 +235,8 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 	if err := runValidateDSL(probeFlowPath); err != nil {
 		return fmt.Errorf("flow file validation failed: %w", err)
 	}
-	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s service=%s port=%d no-rewrite-linked-values=%t",
-		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeServiceName, probePort, probeNoRewriteLinked)
+	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t",
+		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked)
 
 	if err := bodyprobe.Run(
 		ctx,
@@ -217,6 +244,7 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 		probeOpenAPILink,
 		probeOutputPath,
 		probeDockerComposePath,
+		probeDockerSocketPath,
 		probeServiceName,
 		probePort,
 		probeDebug,

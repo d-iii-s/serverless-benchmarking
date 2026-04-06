@@ -359,11 +359,18 @@ func PrintJSON(v any) {
 }
 
 func CreateResultSubdir(path string) (string, error) {
+	return CreateResultSubdirWithPrefix(path, "result")
+}
+
+func CreateResultSubdirWithPrefix(path, prefix string) (string, error) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create base directory %q: %w", path, err)
 	}
+	if prefix == "" {
+		prefix = "result"
+	}
 
-	dirName := fmt.Sprintf("result-%s", time.Now().Format("2006-01-02-15:04:05"))
+	dirName := fmt.Sprintf("%s-%s", prefix, time.Now().Format("2006-01-02-15:04:05"))
 	resultDir := filepath.Join(path, dirName)
 
 	if err := os.Mkdir(resultDir, 0o755); err != nil {

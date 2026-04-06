@@ -33,15 +33,24 @@ func TestRunWithGenerator_RequiresFlowPath(t *testing.T) {
 }
 
 func TestRunWithManagedDocker_RequiresInputs(t *testing.T) {
-	err := runWithManagedDocker(context.Background(), "", "svc", 8080, false, func(context.Context) error { return nil })
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "", socketPath, "svc", 8080, false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty docker compose path")
 	}
-	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "", 8080, false, func(context.Context) error { return nil })
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "", 8080, false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty service name")
 	}
-	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 0, false, func(context.Context) error { return nil })
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "", "svc", 8080, false, func(context.Context) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for empty docker socket path")
+	}
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 0, false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for invalid port")
 	}
@@ -56,7 +65,7 @@ func TestRunWithManagedDocker_ReadinessErrorRunsCleanup(t *testing.T) {
 	}()
 
 	cleanupCalled := 0
-	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error) {
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error) {
 		return func(context.Context) error {
 			cleanupCalled++
 			return nil
@@ -67,7 +76,12 @@ func TestRunWithManagedDocker_ReadinessErrorRunsCleanup(t *testing.T) {
 	}
 
 	runCalled := 0
-	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 8080, false, func(context.Context) error {
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, false, func(context.Context) error {
 		runCalled++
 		return nil
 	})
@@ -90,7 +104,7 @@ func TestRunWithManagedDocker_CleanupErrorIsReturned(t *testing.T) {
 		waitForHTTPReadyFn = origWait
 	}()
 
-	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, serviceName string, debug bool) (func(context.Context) error, error) {
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error) {
 		return func(context.Context) error {
 			return errors.New("down failed")
 		}, nil
@@ -99,7 +113,12 @@ func TestRunWithManagedDocker_CleanupErrorIsReturned(t *testing.T) {
 		return nil
 	}
 
-	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "svc", 8080, false, func(context.Context) error {
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, false, func(context.Context) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "failed to tear down compose project") {
@@ -193,7 +212,7 @@ stages:
 							"step":         1,
 							"ownerPointer": "addOwner.requestBody#/owner/id",
 						},
-						Status:       201,
+						Status: 201,
 					},
 					{
 						FlowID:       fmt.Sprintf("flow-%d-b", callCount),
@@ -240,7 +259,7 @@ stages:
 	if sample.PathTemplate != "/owners/{ownerId}" {
 		t.Fatalf("missing pathTemplate in output: %+v", sample)
 	}
-	if sample.PathParams["ownerId"] != "alpha.addOwner.responseBody#/id" {
+	if sample.PathParams["ownerId"] != "addOwner.responseBody#/id" {
 		t.Fatalf("missing pathParameters in output: %#v", sample.PathParams)
 	}
 	if _, ok := sample.Headers["content-type"]; !ok {
@@ -256,8 +275,8 @@ stages:
 	if !ok {
 		t.Fatalf("unexpected requestBody shape: %#v", sample.RequestBody)
 	}
-	if requestBody["ownerPointer"] != "alpha.addOwner.requestBody#/owner/id" {
-		t.Fatalf("missing stage-scoped request pointer in output: %#v", requestBody)
+	if requestBody["ownerPointer"] != "addOwner.requestBody#/owner/id" {
+		t.Fatalf("missing step-scoped request pointer in output: %#v", requestBody)
 	}
 }
 
@@ -294,7 +313,7 @@ stages:
 		t.Fatalf("expected exactly one result subdir, got %d", len(entries))
 	}
 	name := entries[0].Name()
-	if ok, _ := regexp.MatchString(`^result-\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2}$`, name); !ok {
+	if ok, _ := regexp.MatchString(`^probe-bodies-result-\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2}$`, name); !ok {
 		t.Fatalf("unexpected result directory name: %s", name)
 	}
 	stageDir := filepath.Join(baseDir, name, "stage1")
