@@ -54,6 +54,7 @@ func Run(
 	debug bool,
 	noRewriteLinkedValues bool,
 	readinessPath string,
+	maxProbeTarget int,
 ) error {
 	return runWithManagedDocker(ctx, dockerComposePath, dockerSocketPath, serviceName, port, openAPILink, readinessPath, debug, func(runCtx context.Context) error {
 		generateFn := func(
@@ -70,7 +71,7 @@ func Run(
 				noRewriteLinkedValues,
 			)
 		}
-		return runWithGeneratorAndWorkdir(runCtx, flowPath, openAPILink, outputPath, port, generateFn, debug)
+		return runWithGeneratorAndWorkdir(runCtx, flowPath, openAPILink, outputPath, port, generateFn, debug, maxProbeTarget)
 	})
 }
 
@@ -250,6 +251,7 @@ func runWithGeneratorAndWorkdir(
 	port int,
 	generateFn generateChainsFn,
 	debug bool,
+	maxProbeTarget int,
 ) error {
 	runDir, err := utils.CreateResultSubdirWithPrefix(outputBasePath, "probe-bodies-result")
 	if err != nil {
@@ -258,7 +260,7 @@ func runWithGeneratorAndWorkdir(
 	if debug {
 		fmt.Printf("[probe-bodies] output run directory: %s\n", runDir)
 	}
-	return runWithGenerator(ctx, flowPath, openAPILink, runDir, port, generateFn, debug)
+	return runWithGenerator(ctx, flowPath, openAPILink, runDir, port, generateFn, debug, maxProbeTarget)
 }
 
 func runWithGenerator(
@@ -267,6 +269,7 @@ func runWithGenerator(
 	port int,
 	generateFn generateChainsFn,
 	debug bool,
+	maxProbeTarget int,
 ) error {
 	if port <= 0 {
 		return fmt.Errorf("port must be positive, got %d", port)
@@ -295,7 +298,7 @@ func runWithGenerator(
 		stageName := stageName
 		stage := dsl.Stages[stageName]
 		g.Go(func() error {
-			return runStageProbe(ctx, stageName, stage, outputPath, openAPILink, baseURL, generateFn, debug)
+			return runStageProbe(ctx, stageName, stage, outputPath, openAPILink, baseURL, generateFn, debug, maxProbeTarget)
 		})
 	}
 	return g.Wait()
@@ -310,12 +313,16 @@ func runStageProbe(
 	outputPath, openAPILink, baseURL string,
 	generateFn generateChainsFn,
 	debug bool,
+	maxProbeTarget int,
 ) error {
 	cfg, err := flowgen.ParseWrk2Params(stage.Wrk2Params)
 	if err != nil {
 		return fmt.Errorf("stage %q: invalid wrk2params: %w", stageName, err)
 	}
 	target := requestTargetWithMargin(cfg.TotalRequests())
+	if maxProbeTarget > 0 && target > maxProbeTarget {
+		target = maxProbeTarget
+	}
 	if target <= 0 {
 		return fmt.Errorf("stage %q: computed non-positive target %d", stageName, target)
 	}

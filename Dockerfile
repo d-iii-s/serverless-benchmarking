@@ -14,7 +14,7 @@ WORKDIR /opt/slsbench
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && pip install --no-cache-dir schemathesis \
+    && pip install --no-cache-dir 'schemathesis>=3.39,<4' \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/slsbench /usr/local/bin/slsbench

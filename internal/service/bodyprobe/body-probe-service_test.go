@@ -26,7 +26,7 @@ func TestRunWithGenerator_RequiresFlowPath(t *testing.T) {
 		return nil, nil
 	}
 
-	err := runWithGenerator(context.Background(), " ", "unused", outDir, 9966, generate, false)
+	err := runWithGenerator(context.Background(), " ", "unused", outDir, 9966, generate, false, 0)
 	if err == nil {
 		t.Fatal("expected error for empty flow path")
 	}
@@ -336,7 +336,7 @@ stages:
 			},
 		}, nil
 	}
-	if err := runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, false); err != nil {
+	if err := runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, false, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	alphaFiles := listIterationFiles(t, filepath.Join(outDir, "alpha"))
@@ -408,7 +408,7 @@ stages:
 		}, nil
 	}
 
-	if err := runWithGeneratorAndWorkdir(context.Background(), flowPath, "unused", baseDir, 9966, generate, false); err != nil {
+	if err := runWithGeneratorAndWorkdir(context.Background(), flowPath, "unused", baseDir, 9966, generate, false, 0); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -462,7 +462,7 @@ stages:
 	os.Stdout = w
 	defer func() { os.Stdout = origStdout }()
 
-	err = runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, true)
+	err = runWithGenerator(context.Background(), flowPath, "unused", outDir, 9966, generate, true, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

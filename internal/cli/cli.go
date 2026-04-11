@@ -78,6 +78,7 @@ var (
 	probeDebug             bool
 	probeNoRewriteLinked   bool
 	probeReadinessPath     string
+	probeMaxTarget         int
 )
 
 func init() {
@@ -155,6 +156,7 @@ func init() {
 		"Disable replacing linked values with JSON pointers in generated output",
 	)
 	probeBodiesCmd.Flags().StringVar(&probeReadinessPath, "readiness-path", "", "Explicit readiness probe path (auto-derived from OpenAPI if empty)")
+	probeBodiesCmd.Flags().IntVar(&probeMaxTarget, "max-probe-target", 0, "Cap the number of generated iterations per stage (0 = unlimited)")
 
 	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
@@ -240,8 +242,8 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 	if err := runValidateDSL(probeFlowPath); err != nil {
 		return fmt.Errorf("flow file validation failed: %w", err)
 	}
-	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t readiness-path=%q",
-		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked, probeReadinessPath)
+	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t readiness-path=%q max-probe-target=%d",
+		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked, probeReadinessPath, probeMaxTarget)
 
 	if err := bodyprobe.Run(
 		ctx,
@@ -255,6 +257,7 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 		probeDebug,
 		probeNoRewriteLinked,
 		probeReadinessPath,
+		probeMaxTarget,
 	); err != nil {
 		return err
 	}
