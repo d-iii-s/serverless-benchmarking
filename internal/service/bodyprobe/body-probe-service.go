@@ -22,12 +22,10 @@ import (
 )
 
 const (
-	defaultBasePathPrefix = "/petclinic/api"
-	defaultReadyPath      = "/owners"
-	defaultReadyTimeout   = 120 * time.Second
-	defaultReadyInterval  = 1 * time.Second
-	maxDebugPayloadChars  = 1600
-	debugTruncatedSuffix  = "...<truncated>"
+	defaultReadyTimeout  = 120 * time.Second
+	defaultReadyInterval = 1 * time.Second
+	maxDebugPayloadChars = 1600
+	debugTruncatedSuffix = "...<truncated>"
 )
 
 type generateChainsFn func(ctx context.Context, openAPILink, chain, baseURL string, debug bool) ([]datagen.StatefulChain, error)
@@ -55,8 +53,9 @@ func Run(
 	port int,
 	debug bool,
 	noRewriteLinkedValues bool,
+	readinessPath string,
 ) error {
-	return runWithManagedDocker(ctx, dockerComposePath, dockerSocketPath, serviceName, port, debug, func(runCtx context.Context) error {
+	return runWithManagedDocker(ctx, dockerComposePath, dockerSocketPath, serviceName, port, openAPILink, readinessPath, debug, func(runCtx context.Context) error {
 		generateFn := func(
 			generateCtx context.Context,
 			generateOpenAPILink, chain, baseURL string,
@@ -79,6 +78,7 @@ func runWithManagedDocker(
 	ctx context.Context,
 	dockerComposePath, dockerSocketPath, serviceName string,
 	port int,
+	openAPISpecPath, readinessPathOverride string,
 	debug bool,
 	runFn func(context.Context) error,
 ) error {
@@ -106,7 +106,19 @@ func runWithManagedDocker(
 		return err
 	}
 
-	readinessURL := fmt.Sprintf("http://localhost:%d%s%s", port, defaultBasePathPrefix, defaultReadyPath)
+	var readyPath string
+	if rp := strings.TrimSpace(readinessPathOverride); rp != "" {
+		readyPath = rp
+		fmt.Printf("[probe-bodies] using explicit readiness path: %s\n", readyPath)
+	} else {
+		basePath := harness.DeriveAPIBasePath(openAPISpecPath)
+		readyPath = basePath
+		fmt.Printf("[probe-bodies] auto-derived readiness path from OpenAPI: %s\n", readyPath)
+	}
+	if !strings.HasPrefix(readyPath, "/") {
+		readyPath = "/" + readyPath
+	}
+	readinessURL := fmt.Sprintf("http://localhost:%d%s", port, readyPath)
 	if err := waitForHTTPReadyFn(ctx, readinessURL, defaultReadyTimeout, defaultReadyInterval); err != nil {
 		_ = teardown(context.Background())
 		return fmt.Errorf("service did not become ready at %s: %w", readinessURL, err)
@@ -270,7 +282,8 @@ func runWithGenerator(
 		return fmt.Errorf("flow contains no stages")
 	}
 
-	baseURL := fmt.Sprintf("http://localhost:%d%s", port, defaultBasePathPrefix)
+	apiBasePath := harness.DeriveAPIBasePath(openAPILink)
+	baseURL := fmt.Sprintf("http://localhost:%d%s", port, apiBasePath)
 	stageNames := make([]string, 0, len(dsl.Stages))
 	for stageName := range dsl.Stages {
 		stageNames = append(stageNames, stageName)

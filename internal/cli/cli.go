@@ -65,6 +65,7 @@ var (
 	harnessServiceMountPaths []string
 	harnessDockerSocketPath  string
 	harnessDebugNon2xx       bool
+	harnessReadinessPath     string
 
 	// Probe command flags
 	probeFlowPath          string
@@ -76,6 +77,7 @@ var (
 	probePort              int
 	probeDebug             bool
 	probeNoRewriteLinked   bool
+	probeReadinessPath     string
 )
 
 func init() {
@@ -112,6 +114,7 @@ func init() {
 	harnessCmd.Flags().StringSliceVarP(&harnessServiceMountPaths, "service-mount-path", "m", []string{}, "Optional paths inside service container to copy to results (repeat flag or use comma-separated values)")
 	harnessCmd.Flags().StringVar(&harnessDockerSocketPath, "docker-socket-path", "/var/run/docker.sock", "Path to Docker socket for DooD mode")
 	harnessCmd.Flags().BoolVar(&harnessDebugNon2xx, "debug-non2xx", false, "Enable FLOW_DEBUG_NON2XX=1 in wrk2 container for non-2xx debug capture")
+	harnessCmd.Flags().StringVar(&harnessReadinessPath, "readiness-path", "", "Explicit readiness probe path (auto-derived from OpenAPI if empty)")
 
 	// Probe-bodies flags
 	probeBodiesCmd.Flags().StringVarP(&probeFlowPath, "flow-path", "f", "", "Path to flow DSL YAML file")
@@ -151,6 +154,7 @@ func init() {
 		false,
 		"Disable replacing linked values with JSON pointers in generated output",
 	)
+	probeBodiesCmd.Flags().StringVar(&probeReadinessPath, "readiness-path", "", "Explicit readiness probe path (auto-derived from OpenAPI if empty)")
 
 	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
@@ -202,8 +206,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("flow file validation failed: %w", err)
 	}
 
-	log.Printf("Running harness: flow=%s probe-bodies=%s openapi=%s result=%s docker-compose=%s service=%s port=%d docker-socket=%s service-mount-paths=%v debug-non2xx=%t",
-		harnessFlowPath, harnessProbeBodiesPath, openApiSpecPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessDockerSocketPath, harnessServiceMountPaths, harnessDebugNon2xx)
+	log.Printf("Running harness: flow=%s probe-bodies=%s openapi=%s result=%s docker-compose=%s service=%s port=%d docker-socket=%s service-mount-paths=%v debug-non2xx=%t readiness-path=%q",
+		harnessFlowPath, harnessProbeBodiesPath, openApiSpecPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessDockerSocketPath, harnessServiceMountPaths, harnessDebugNon2xx, harnessReadinessPath)
 
 	return harness.Run(
 		ctx,
@@ -217,6 +221,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		harnessProbeBodiesPath,
 		harnessDockerSocketPath,
 		harnessDebugNon2xx,
+		harnessReadinessPath,
 	)
 }
 
@@ -235,8 +240,8 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 	if err := runValidateDSL(probeFlowPath); err != nil {
 		return fmt.Errorf("flow file validation failed: %w", err)
 	}
-	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t",
-		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked)
+	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t readiness-path=%q",
+		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked, probeReadinessPath)
 
 	if err := bodyprobe.Run(
 		ctx,
@@ -249,6 +254,7 @@ func runProbeBodies(cmd *cobra.Command, args []string) error {
 		probePort,
 		probeDebug,
 		probeNoRewriteLinked,
+		probeReadinessPath,
 	); err != nil {
 		return err
 	}

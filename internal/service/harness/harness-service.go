@@ -34,7 +34,7 @@ import (
 const (
 	defaultFirstResponseTimeout  = 120 * time.Second
 	defaultFirstResponseInterval = 200 * time.Millisecond
-	defaultAPIBasePathPrefix     = "/petclinic/api"
+	defaultAPIBasePathPrefix     = "/"
 	wrkFlowImage                 = "aape2k/wrk2-flow:v3.0"
 )
 
@@ -142,6 +142,7 @@ func Run(
 	serviceMountPaths []string,
 	probeBodiesPath, dockerSocketPath string,
 	debugNon2xx bool,
+	readinessPathOverride string,
 ) error {
 	if strings.TrimSpace(flowPath) == "" {
 		return fmt.Errorf("flow path must be non-empty")
@@ -286,9 +287,16 @@ func Run(
 		return fmt.Errorf("flow has no stages")
 	}
 
-	apiBasePath := deriveAPIBasePath(openAPISpecPath)
-	firstPath := firstResolvedPathFromProbeData(probeBodiesPath)
-	firstResult, err := measureFirstResponse(ctx, serviceName, port, apiBasePath, firstPath)
+	apiBasePath := DeriveAPIBasePath(openAPISpecPath)
+	var effectiveReadinessPath string
+	if strings.TrimSpace(readinessPathOverride) != "" {
+		effectiveReadinessPath = readinessPathOverride
+		log.Printf("Using explicit readiness path override: %s", effectiveReadinessPath)
+	} else {
+		effectiveReadinessPath = readinessPath(apiBasePath, firstResolvedPathFromProbeData(probeBodiesPath))
+		log.Printf("Auto-derived readiness path: %s", effectiveReadinessPath)
+	}
+	firstResult, err := measureFirstResponse(ctx, serviceName, port, effectiveReadinessPath)
 	if err != nil {
 		return fmt.Errorf("failed to measure first response: %w", err)
 	}
@@ -585,10 +593,9 @@ func measureFirstResponse(
 	ctx context.Context,
 	serviceName string,
 	port int,
-	apiBasePath string,
-	resolvedPath string,
+	readyPath string,
 ) (*firstResponseResult, error) {
-	path := readinessPath(apiBasePath, resolvedPath)
+	path := readyPath
 	log.Printf("Harness first-response readiness path: %s", path)
 
 	targets := []string{
@@ -656,7 +663,7 @@ func measureFirstResponseURL(ctx context.Context, targetURL, resolvedPath string
 	}
 }
 
-func deriveAPIBasePath(openAPISpecPath string) string {
+func DeriveAPIBasePath(openAPISpecPath string) string {
 	raw, err := os.ReadFile(openAPISpecPath)
 	if err != nil {
 		return defaultAPIBasePathPrefix
@@ -703,14 +710,14 @@ func readinessPath(apiBasePath, resolvedPath string) string {
 func normalizeAPIBasePath(path string) string {
 	base := strings.TrimSpace(path)
 	if base == "" || base == "/" {
-		return defaultAPIBasePathPrefix
+		return "/"
 	}
 	if !strings.HasPrefix(base, "/") {
 		base = "/" + base
 	}
 	base = strings.TrimSuffix(base, "/")
 	if base == "" {
-		return defaultAPIBasePathPrefix
+		return "/"
 	}
 	return base
 }

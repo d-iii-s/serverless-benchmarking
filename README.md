@@ -193,7 +193,45 @@ The scenario file is saved with a timestamp:
 - Format: `scenario-YYYY-MM-DD-HH:MM:SS.json`
 - Contains: Endpoint definitions, data structures, and execution order
 
-### Step 3: Run Benchmark Harness
+### Step 3: Probe Bodies
+
+The `probe-bodies` command generates stateful, link-aware API chains using Schemathesis against a running application and persists accepted chain artifacts for use by the harness.
+
+#### Basic Usage
+
+```bash
+slsbench probe-bodies \
+  --flow-path ./flow.yaml \
+  --openapi-link ./openapi.yml \
+  --output-path ./result-probe \
+  --docker-compose-path ./docker-compose.yml \
+  --service-name myapp \
+  --port 8080 \
+  --docker-socket-path /var/run/docker.sock
+```
+
+#### Flags
+
+- `-f, --flow-path` (required): Path to flow DSL YAML file.
+- `-o, --openapi-link` (required): OpenAPI file path or URL.
+- `-r, --output-path` (required): Output path for accepted generated bodies.
+- `-d, --docker-compose-path` (required): Path to docker-compose.yml for the benchmark application.
+- `-n, --service-name` (required): Service name in docker-compose to probe.
+- `-p, --port` (required): Local running service port to probe.
+- `--docker-socket-path`: Docker socket path for DooD mode (default: `/var/run/docker.sock`).
+- `--readiness-path`: Explicit HTTP path for the readiness probe (e.g. `/health`). When omitted the path is auto-derived from the OpenAPI spec `servers[0].url`, falling back to `/`.
+- `--no-rewrite-linked-values`: Disable replacing linked values with JSON pointers in generated output.
+- `--debug`: Enable detailed probe debug logs.
+
+#### What It Does
+
+1. Starts the application via Docker Compose.
+2. Waits for the service to become ready (readiness probe derived from OpenAPI or `--readiness-path` override).
+3. For each flow stage, generates stateful API chains via Schemathesis and filters for 2xx-accepted responses.
+4. Writes accepted iterations as `iteration-*.json` files under `<output-path>/probe-bodies-result-<timestamp>/<stage>/`.
+5. Tears down compose resources.
+
+### Step 4: Run Benchmark Harness
 
 The `harness` command orchestrates benchmark execution using flow stages,
 `probe-bodies` generated iterations, Docker Compose, and `wrk2-flow` containers.
@@ -224,6 +262,8 @@ slsbench harness \
 - `-r, --result-path`: Base output path (a timestamped run directory is created inside it).
 - `-m, --service-mount-path`: Optional paths inside service container to copy to results (repeat `-m` or use comma-separated values).
 - `--docker-socket-path`: Docker socket path for DooD mode (default: `/var/run/docker.sock`).
+- `--readiness-path`: Explicit HTTP path for the readiness probe (e.g. `/health`). When omitted the path is auto-derived from the OpenAPI spec `servers[0].url`, falling back to `/`.
+- `--debug-non2xx`: Enable `FLOW_DEBUG_NON2XX=1` in wrk2 containers for non-2xx response debug capture.
 
 #### What It Does
 
@@ -293,6 +333,7 @@ Results are saved in a timestamped directory:
   - `first_request_result.json`: First request latency data
   - `wrk2-input/<stage>/<stage>/iteration-*.json`: Stage input data used for one run per stage
   - `wrk2-results/<stage>/`: wrk output files and container logs for each stage
+  - `benchmark-container-stats.jsonl`: Continuous stream of container resource stats (CPU, memory, network I/O, PIDs) for the benchmarked service, collected throughout the run
   - `collected/`: Files copied from service container (if `--service-mount-path` was used)
 
 ### Complete Workflow Example

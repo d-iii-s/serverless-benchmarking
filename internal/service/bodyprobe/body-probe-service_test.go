@@ -38,19 +38,19 @@ func TestRunWithManagedDocker_RequiresInputs(t *testing.T) {
 		t.Fatalf("failed to create fake docker socket: %v", err)
 	}
 
-	err := runWithManagedDocker(context.Background(), "", socketPath, "svc", 8080, false, func(context.Context) error { return nil })
+	err := runWithManagedDocker(context.Background(), "", socketPath, "svc", 8080, "", "", false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty docker compose path")
 	}
-	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "", 8080, false, func(context.Context) error { return nil })
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "", 8080, "", "", false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty service name")
 	}
-	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "", "svc", 8080, false, func(context.Context) error { return nil })
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", "", "svc", 8080, "", "", false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for empty docker socket path")
 	}
-	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 0, false, func(context.Context) error { return nil })
+	err = runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 0, "", "", false, func(context.Context) error { return nil })
 	if err == nil {
 		t.Fatal("expected error for invalid port")
 	}
@@ -81,7 +81,7 @@ func TestRunWithManagedDocker_ReadinessErrorRunsCleanup(t *testing.T) {
 		t.Fatalf("failed to create fake docker socket: %v", err)
 	}
 
-	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, false, func(context.Context) error {
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, "", "", false, func(context.Context) error {
 		runCalled++
 		return nil
 	})
@@ -118,11 +118,118 @@ func TestRunWithManagedDocker_CleanupErrorIsReturned(t *testing.T) {
 		t.Fatalf("failed to create fake docker socket: %v", err)
 	}
 
-	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, false, func(context.Context) error {
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, "", "", false, func(context.Context) error {
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "failed to tear down compose project") {
 		t.Fatalf("expected teardown error, got %v", err)
+	}
+}
+
+func TestRunWithManagedDocker_ExplicitReadinessPath(t *testing.T) {
+	origStart := startComposeForProbeFn
+	origWait := waitForHTTPReadyFn
+	defer func() {
+		startComposeForProbeFn = origStart
+		waitForHTTPReadyFn = origWait
+	}()
+
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error) {
+		return func(context.Context) error { return nil }, nil
+	}
+
+	var capturedURL string
+	waitForHTTPReadyFn = func(ctx context.Context, url string, timeout, interval time.Duration) error {
+		capturedURL = url
+		return nil
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, "", "/health", false, func(context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedURL != "http://localhost:8080/health" {
+		t.Fatalf("expected readiness URL with explicit path, got %q", capturedURL)
+	}
+}
+
+func TestRunWithManagedDocker_AutoDerivedReadinessPath(t *testing.T) {
+	origStart := startComposeForProbeFn
+	origWait := waitForHTTPReadyFn
+	defer func() {
+		startComposeForProbeFn = origStart
+		waitForHTTPReadyFn = origWait
+	}()
+
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error) {
+		return func(context.Context) error { return nil }, nil
+	}
+
+	var capturedURL string
+	waitForHTTPReadyFn = func(ctx context.Context, url string, timeout, interval time.Duration) error {
+		capturedURL = url
+		return nil
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	specPath := filepath.Join(t.TempDir(), "openapi.yml")
+	if err := os.WriteFile(specPath, []byte("servers:\n  - url: http://localhost:9966/petclinic/api\n"), 0o644); err != nil {
+		t.Fatalf("failed to write temp openapi spec: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, specPath, "", false, func(context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedURL != "http://localhost:8080/petclinic/api" {
+		t.Fatalf("expected readiness URL derived from OpenAPI, got %q", capturedURL)
+	}
+}
+
+func TestRunWithManagedDocker_FallbackReadinessPath(t *testing.T) {
+	origStart := startComposeForProbeFn
+	origWait := waitForHTTPReadyFn
+	defer func() {
+		startComposeForProbeFn = origStart
+		waitForHTTPReadyFn = origWait
+	}()
+
+	startComposeForProbeFn = func(ctx context.Context, dockerComposePath, dockerSocketPath, serviceName string, debug bool) (func(context.Context) error, error) {
+		return func(context.Context) error { return nil }, nil
+	}
+
+	var capturedURL string
+	waitForHTTPReadyFn = func(ctx context.Context, url string, timeout, interval time.Duration) error {
+		capturedURL = url
+		return nil
+	}
+
+	socketPath := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(socketPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("failed to create fake docker socket: %v", err)
+	}
+
+	err := runWithManagedDocker(context.Background(), "/tmp/docker-compose.yml", socketPath, "svc", 8080, "", "", false, func(context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedURL != "http://localhost:8080/" {
+		t.Fatalf("expected readiness URL fallback to /, got %q", capturedURL)
 	}
 }
 
