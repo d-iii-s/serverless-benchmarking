@@ -1,404 +1,307 @@
-# Serverless Benchmark Suite
+# slsbench — Serverless Benchmark Suite
+
+A scenario-based benchmarking framework for serverless and containerized applications. Instead of isolated micro-benchmarks with hardcoded requests, `slsbench` derives stateful, link-aware API request chains from **OpenAPI specifications** and executes them through a **flow DSL** that models realistic usage patterns — including weighted transitions, multi-step CRUD flows, and configurable load profiles via [wrk2](https://github.com/giltene/wrk2).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph inputs [Inputs]
+        FlowDSL["Flow DSL\n(YAML)"]
+        OpenAPI["OpenAPI Spec\n(YAML/JSON)"]
+        Compose["Docker Compose"]
+    end
+
+    subgraph phase1 [Phase 1: Probe Bodies]
+        PB["slsbench probe-bodies"]
+        Schemathesis["Schemathesis\n(stateful chains)"]
+        PB --> Schemathesis
+        Schemathesis --> Iterations["iteration-*.json\n(accepted 2xx chains)"]
+    end
+
+    subgraph phase2 [Phase 2: Harness]
+        H["slsbench harness"]
+        WRK2["wrk2-flow containers\n(one per stage)"]
+        H --> WRK2
+        WRK2 --> Results["Harness Results\n(latency, throughput,\ncontainer stats)"]
+    end
+
+    FlowDSL --> PB
+    OpenAPI --> PB
+    Compose --> PB
+
+    FlowDSL --> H
+    OpenAPI --> H
+    Compose --> H
+    Iterations --> H
+```
+
+**Phase 1 — `probe-bodies`**: Starts the application via Docker Compose, generates stateful API chains using [Schemathesis](https://schemathesis.readthedocs.io/) (respecting OpenAPI Links), executes them against the live service, and persists only 2xx-accepted iterations.
+
+**Phase 2 — `harness`**: Starts the application, measures time-to-first-response, then runs one `wrk2-flow` container per flow stage using the pre-generated iterations. Collects latency histograms, throughput data, and container resource stats.
+
+## Prerequisites
+
+| Dependency | Version | Notes |
+|---|---|---|
+| **Go** | 1.24+ | [Install Go](https://go.dev/doc/install) |
+| **Docker** | 20.10+ | With Docker Compose v2 (`docker compose`) |
+| **Docker Compose** | v2 | Usually bundled with Docker Desktop |
+
+When running via the Docker image (recommended), Go and Python are not needed on the host.
 
 ## Installation
 
-### Prerequisites
-
-- **Go 1.24+** - [Install Go](https://go.dev/doc/install)
-- **Docker** - Required for running benchmarks (the tool uses Docker Compose)
-- **Docker Compose** - Usually included with Docker Desktop
-
-### Install the CLI Tool
-
-> **Note:** This is a private repository. You'll need appropriate access and authentication configured.
-
-#### Build from Source
-
-Clone the repository and build locally:
+### Option 1: Build from Source
 
 ```bash
 git clone <repository-url>
 cd serverless-benchmarking
-git checkout extension-mechanism-redesign
 ```
 
-**Option 1: Use the build script (Recommended)**
-
-The `build.sh` script will check all prerequisites and build the binary:
+Using the build script (checks all prerequisites automatically):
 
 ```bash
 ./build.sh
 ```
 
-This script will:
-- Check for Go 1.24+, Git, Docker, and Docker Compose
-- Verify Docker is running
-- Build the `slsbench` binary if all requirements are met
-
-**Option 2: Manual build**
-
-If you prefer to build manually:
+Or manually:
 
 ```bash
 go build -o slsbench ./cmd/slsbench
 ```
 
-**Install the binary**
-
-After building, you can move the binary to a directory in your PATH:
+Then optionally move the binary into your `PATH`:
 
 ```bash
 sudo mv slsbench /usr/local/bin/
-# or
-mv slsbench ~/go/bin/
 ```
 
-### Verify Installation
-
-Check that the tool is installed correctly:
-
-```bash
-slsbench help
-```
-
-You should see the help menu with available commands.
-
-## Quick Start
-
-The tool provides three main commands for the benchmarking workflow:
-
-### 1. Enrich OpenAPI Specification
-
-Enrich an OpenAPI specification file with additional metadata:
-
-```bash
-slsbench enrich -specification-path ./api.yaml -output-path ./enriched
-```
-
-### 2. Generate Scenario
-
-Generate a scenario file from an enriched OpenAPI specification:
-
-```bash
-slsbench scenario -enriched-specification-path ./enriched/enriched-spec-*.yaml -output-path ./scenarios
-```
-
-### 3. Run Benchmark Harness
-
-Run the benchmark harness against a service:
-
-```bash
-slsbench harness \
-  -scenario-path ./scenarios/scenario-*.json \
-  -service-name myapp \
-  -docker-compose-path ./docker-compose.yml \
-  -port 8080 \
-  -result-path ./results
-```
-
-### Getting Help
-
-- Show general help: `slsbench help` or `slsbench`
-- Show command-specific help: `slsbench help <command>` or `slsbench <command> -help`
-
-Examples:
-```bash
-slsbench help enrich
-slsbench scenario -help
-slsbench harness -help
-```
-
-## User Guide
-
-### Overview
-
-The benchmarking workflow consists of three main steps:
-
-1. **Enrich** - Add metadata hints to your OpenAPI specification
-2. **Scenario** - Generate a benchmark scenario from the enriched specification
-3. **Harness** - Run the benchmark against your service using Docker Compose
-
-### Step 1: Enrich OpenAPI Specification
-
-The `enrich` command processes your OpenAPI specification and adds metadata hints that guide data generation for benchmark scenarios.
-
-#### Basic Usage
-
-```bash
-slsbench enrich -s ./api.yaml -o ./enriched
-```
-
-#### Flags
-
-- `-s, --specification-path` (required): Path to your OpenAPI specification file (YAML or JSON)
-- `-o, --output-path`: Directory where the enriched specification will be saved (default: `./enriched-spec.yaml`)
-
-#### What It Does
-
-- Reads your OpenAPI specification
-- Prompts you to select data generation hints for each parameter and property
-- Adds `x-user-hint` extensions to guide test data generation
-- Saves the enriched specification with a timestamp
-
-#### Example
-
-```bash
-# Enrich a specification file
-slsbench enrich -s ./openapi.yaml -o ./enriched
-
-# Output: ./enriched/enriched-spec-2025-01-15-14:30:45.yaml
-```
-
-#### Output
-
-The enriched specification is saved with a timestamp in the filename:
-- Format: `enriched-spec-YYYY-MM-DD-HH:MM:SS.yaml`
-- Location: The directory specified by `--output-path`
-
-### Step 2: Generate Scenario
-
-The `scenario` command generates a benchmark scenario file from the enriched OpenAPI specification.
-
-#### Basic Usage
-
-```bash
-slsbench scenario -s ./enriched/enriched-spec-*.yaml -o ./scenarios
-```
-
-#### Flags
-
-- `-s, --enriched-specification-path` (required): Path to the enriched OpenAPI specification file
-- `-o, --output-path`: Directory where the scenario file will be saved (default: `./scenario.json`)
-
-#### What It Does
-
-- Reads the enriched OpenAPI specification
-- Builds a data model from all endpoints, operations, and parameters
-- Creates a scenario graph representing the API structure
-- Performs topological sorting to determine endpoint execution order
-- Saves the scenario as a JSON file
-
-#### Example
-
-```bash
-# Generate scenario from enriched specification
-slsbench scenario -s ./enriched/enriched-spec-2025-01-15-14:30:45.yaml -o ./scenarios
-
-# Output: ./scenarios/scenario-2025-01-15-14:35:12.json
-```
-
-#### Output
-
-The scenario file is saved with a timestamp:
-- Format: `scenario-YYYY-MM-DD-HH:MM:SS.json`
-- Contains: Endpoint definitions, data structures, and execution order
-
-### Step 3: Probe Bodies
-
-The `probe-bodies` command generates stateful, link-aware API chains using Schemathesis against a running application and persists accepted chain artifacts for use by the harness.
-
-#### Basic Usage
-
-```bash
-slsbench probe-bodies \
-  --flow-path ./flow.yaml \
-  --openapi-link ./openapi.yml \
-  --output-path ./result-probe \
-  --docker-compose-path ./docker-compose.yml \
-  --service-name myapp \
-  --port 8080 \
-  --docker-socket-path /var/run/docker.sock
-```
-
-#### Flags
-
-- `-f, --flow-path` (required): Path to flow DSL YAML file.
-- `-o, --openapi-link` (required): OpenAPI file path or URL.
-- `-r, --output-path` (required): Output path for accepted generated bodies.
-- `-d, --docker-compose-path` (required): Path to docker-compose.yml for the benchmark application.
-- `-n, --service-name` (required): Service name in docker-compose to probe.
-- `-p, --port` (required): Local running service port to probe.
-- `--docker-socket-path`: Docker socket path for DooD mode (default: `/var/run/docker.sock`).
-- `--readiness-path`: Explicit HTTP path for the readiness probe (e.g. `/health`). When omitted the path is auto-derived from the OpenAPI spec `servers[0].url`, falling back to `/`.
-- `--no-rewrite-linked-values`: Disable replacing linked values with JSON pointers in generated output.
-- `--debug`: Enable detailed probe debug logs.
-
-#### What It Does
-
-1. Starts the application via Docker Compose.
-2. Waits for the service to become ready (readiness probe derived from OpenAPI or `--readiness-path` override).
-3. For each flow stage, generates stateful API chains via Schemathesis and filters for 2xx-accepted responses.
-4. Writes accepted iterations as `iteration-*.json` files under `<output-path>/probe-bodies-result-<timestamp>/<stage>/`.
-5. Tears down compose resources.
-
-### Step 4: Run Benchmark Harness
-
-The `harness` command orchestrates benchmark execution using flow stages,
-`probe-bodies` generated iterations, Docker Compose, and `wrk2-flow` containers.
-
-#### Basic Usage
-
-```bash
-slsbench harness \
-  --flow-path ./workdir/spring-petclinic-rest/flow.yaml \
-  --probe-bodies-path ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
-  --openapi-spec-path ./workdir/spring-petclinic-rest/openapi.yml \
-  --docker-compose-path ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  --service-name petclinic \
-  --port 9966 \
-  --result-path ./workdir/spring-petclinic-rest/results \
-  --service-mount-path /var/log/app \
-  --docker-socket-path /var/run/docker.sock
-```
-
-#### Flags
-
-- `-f, --flow-path` (required): Flow DSL YAML path.
-- `-b, --probe-bodies-path` (required): Path to `probe-bodies` output root (contains `<stage>/iteration-*.json`).
-- `-o, --openapi-spec-path` (required): OpenAPI spec path.
-- `-d, --docker-compose-path` (required): Application docker-compose path.
-- `-n, --service-name` (required): Service name in docker-compose.
-- `-p, --port`: Service port inside Docker network (default: `8080`).
-- `-r, --result-path`: Base output path (a timestamped run directory is created inside it).
-- `-m, --service-mount-path`: Optional paths inside service container to copy to results (repeat `-m` or use comma-separated values).
-- `--docker-socket-path`: Docker socket path for DooD mode (default: `/var/run/docker.sock`).
-- `--readiness-path`: Explicit HTTP path for the readiness probe (e.g. `/health`). When omitted the path is auto-derived from the OpenAPI spec `servers[0].url`, falling back to `/`.
-- `--debug-non2xx`: Enable `FLOW_DEBUG_NON2XX=1` in wrk2 containers for non-2xx response debug capture.
-
-#### What It Does
-
-1. Starts your service with Docker Compose.
-2. Measures time to first successful response and writes `first_request_result.json`.
-3. For each flow stage, starts one dedicated `wrk2-flow` container run.
-4. Forces `wrk2` latency histogram output via `--latency`.
-5. Mounts stage probe data into the benchmark container and saves stage-level wrk output artifacts.
-6. Optionally copies one or more mounted paths from the service container to results.
-7. Always tears down compose resources.
-
-#### Example
-
-```bash
-# Run benchmark from probe-bodies generated iterations
-slsbench harness \
-  -f ./workdir/spring-petclinic-rest/flow.yaml \
-  -b ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
-  -o ./workdir/spring-petclinic-rest/openapi.yml \
-  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  -n petclinic \
-  -p 9966 \
-  -r ./workdir/spring-petclinic-rest/results
-
-# Run benchmark and collect logs/metrics from the service container
-slsbench harness \
-  -f ./flow.yaml \
-  -b ./result-probe/result-2026-04-03-14:45:00 \
-  -o ./openapi.yml \
-  -d ./docker-compose.yml \
-  -n myapp \
-  -p 8080 \
-  -m /var/log/app
-```
-
-#### Collecting Files from Service Container
-
-Use `--service-mount-path` (`-m`) to copy one or more files/directories from the service container to your results folder after benchmark completion. This is useful for:
-
-- Application logs
-- JFR (Java Flight Recorder) recordings
-- Custom metrics files
-- Debug output
-- Profiling data
-
-Paths should be absolute paths inside the container:
-
-```bash
-# Collect application logs
-slsbench harness -n myapp -m /var/log/app
-
-# Collect multiple paths
-slsbench harness -n myapp -m /var/log/app -m /tmp/metrics
-
-# Collect JFR recordings
-slsbench harness -n myapp -m /tmp/recording.jfr
-```
-
-Collected files are saved in a `collected/` subdirectory within the results folder.
-
-#### Output
-
-Results are saved in a timestamped directory:
-- Probe output format: `probe-bodies-result-YYYY-MM-DD-HH:MM:SS/`
-- Harness output format: `harness-result-YYYY-MM-DD-HH:MM:SS/`
-- Contents:
-  - `first_request_result.json`: First request latency data
-  - `wrk2-input/<stage>/<stage>/iteration-*.json`: Stage input data used for one run per stage
-  - `wrk2-results/<stage>/`: wrk output files and container logs for each stage
-  - `benchmark-container-stats.jsonl`: Continuous stream of container resource stats (CPU, memory, network I/O, PIDs) for the benchmarked service, collected throughout the run
-  - `collected/`: Files copied from service container (if `--service-mount-path` was used)
-
-### Complete Workflow Example
-
-Here's a complete example from start to finish:
-
-```bash
-# 1. Enrich your OpenAPI specification
-slsbench enrich -s ./api/openapi.yaml -o ./enriched
-
-# 2. Generate probe-bodies data
-slsbench probe-bodies \
-  -f ./workdir/spring-petclinic-rest/flow.yaml \
-  -o ./workdir/spring-petclinic-rest/openapi.yml \
-  -r ./workdir/spring-petclinic-rest \
-  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  -n petclinic \
-  -p 9966
-
-# 3. Run harness benchmark
-slsbench harness \
-  -f ./workdir/spring-petclinic-rest/flow.yaml \
-  -b ./workdir/spring-petclinic-rest/result-2026-04-03-14:45:00 \
-  -o ./workdir/spring-petclinic-rest/openapi.yml \
-  -d ./workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  -n petclinic \
-  -p 9966 \
-  -r ./results
-
-# 4. Check results
-ls -la ./results/harness-result-*/
-```
-
-### Docker Compose Requirements
-
-Your `docker-compose.yml` file should:
-
-1. Define the service you want to benchmark
-2. Expose the service on the port specified with `--port`
-3. Be compatible with Docker Compose v2
-
-Example `docker-compose.yml`:
-
-```yaml
-version: '3.8'
-services:
-  myapp:
-    image: myapp:latest
-    ports:
-      - "8080:8080"
-    environment:
-      - PORT=8080
-```
-
-### Run in Docker (DooD)
-
-You can run the full `slsbench` CLI in a container and still control the host Docker daemon by mounting the Docker socket (Docker-out-of-Docker pattern).
-
-#### Build the Image
+### Option 2: Docker Image (Recommended for DooD)
 
 ```bash
 docker build -t slsbench:dood .
 ```
 
-#### Probe-Bodies in DooD
+The image bundles Go-built `slsbench`, Python 3.12 with Schemathesis, and all required scripts. Use it with Docker-out-of-Docker by mounting the host Docker socket.
+
+### Verify Installation
+
+```bash
+slsbench help
+```
+
+## Quick Start
+
+The benchmarking workflow is two steps: generate probe bodies, then run the harness.
+
+```bash
+# Step 1: Generate stateful probe bodies
+slsbench probe-bodies \
+  --flow-path ./flow.yaml \
+  --openapi-link ./openapi.yml \
+  --output-path ./probe-output \
+  --docker-compose-path ./docker-compose.yml \
+  --service-name petclinic \
+  --port 9966
+
+# Step 2: Run the benchmark harness
+slsbench harness \
+  --flow-path ./flow.yaml \
+  --probe-bodies-path ./probe-output/probe-bodies-result-<timestamp> \
+  --openapi-spec-path ./openapi.yml \
+  --docker-compose-path ./docker-compose.yml \
+  --service-name petclinic \
+  --port 9966 \
+  --result-path ./results
+```
+
+A bundled example application is available under `workdir/spring-petclinic-rest/` with a pre-configured `flow.yaml`, `openapi.yml`, and `docker-compose.petclinic.yml`.
+
+## Flow DSL Reference
+
+Benchmark scenarios are defined in a YAML file validated against a [JSON Schema](internal/service/dslvalidator/schema/dsl.schema.json). The top-level key is `stages`, where each stage defines wrk2 parameters and a directed flow graph of API operations.
+
+### Schema
+
+```yaml
+stages:
+  <stage-name>:
+    wrk2params: "<wrk2 CLI flags>"   # e.g. "-t2 -c5 -d30s -R500"
+    flow:
+      - <node-name>:
+          operationId: <string>      # OpenAPI operationId (required)
+          entrynode: true            # marks the flow entry point (one per stage)
+          edges:
+            - to: <target-node>      # name of another node in this stage
+              weight: <0.0-1.0>      # relative probability of this transition
+              mappings:              # optional field mappings between steps
+                - source: "body.id"
+                  destination: "path.ownerId"
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `stages` | object | yes | Map of stage names to stage definitions |
+| `wrk2params` | string | yes | wrk2 CLI parameters (threads, connections, duration, rate) |
+| `flow` | array | yes | Ordered list of flow nodes |
+| `operationId` | string | yes | OpenAPI `operationId` — resolved to HTTP method and path at runtime |
+| `entrynode` | boolean | no | Marks the starting node of the flow graph |
+| `edges` | array | no | Outgoing transitions from this node |
+| `edges[].to` | string | yes | Target node name |
+| `edges[].weight` | number | no | Relative transition probability (weights are normalized per node) |
+| `edges[].mappings` | array | no | Field mappings from source response to destination request |
+
+### Example
+
+```yaml
+stages:
+  mixed:
+    wrk2params: -t2 -c10 -d60s -R500
+    flow:
+      - createOwner:
+          operationId: addOwner
+          entrynode: true
+          edges:
+            - to: createPetType
+              weight: 0.30
+            - to: listOwners
+              weight: 0.40
+            - to: createVet
+              weight: 0.30
+
+      - createPetType:
+          operationId: addPetType
+          edges:
+            - to: getPetType
+              weight: 0.50
+            - to: deletePetType
+              weight: 0.50
+
+      - listOwners:
+          operationId: listOwners
+
+      - createVet:
+          operationId: addVet
+
+      - getPetType:
+          operationId: getPetType
+
+      - deletePetType:
+          operationId: deletePetType
+```
+
+The flow graph supports weighted round-robin (WRR) transitions. Leaf nodes (no edges) are terminal — the iteration ends there and a new one starts from the entry node.
+
+## Command Reference
+
+### `slsbench probe-bodies`
+
+Generates stateful, link-aware API chains using Schemathesis against a running application and persists accepted chain artifacts for use by the harness.
+
+**What it does:**
+
+1. Starts the application via Docker Compose
+2. Waits for the service to become ready (readiness probe derived from OpenAPI or `--readiness-path`)
+3. For each flow stage, generates stateful API chains via Schemathesis, filtering for 2xx-accepted responses
+4. Writes accepted iterations as `iteration-*.json` files under `<output-path>/probe-bodies-result-<timestamp>/<stage>/`
+5. Tears down Docker Compose resources
+
+**Flags:**
+
+| Flag | Short | Default | Required | Description |
+|---|---|---|---|---|
+| `--flow-path` | `-f` | — | yes | Path to the flow DSL YAML file |
+| `--openapi-link` | `-o` | — | yes | OpenAPI file path or URL |
+| `--output-path` | `-r` | `./result-probe` | yes | Output directory for accepted probe bodies |
+| `--docker-compose-path` | `-d` | — | yes | Path to docker-compose.yml for the application |
+| `--service-name` | `-n` | — | yes | Service name in docker-compose to probe |
+| `--port` | `-p` | `8080` | yes | Service port inside the Docker network |
+| `--docker-socket-path` | — | `/var/run/docker.sock` | no | Docker socket path (for DooD mode) |
+| `--readiness-path` | — | `""` | no | Explicit HTTP readiness probe path (auto-derived from OpenAPI if empty) |
+| `--max-probe-target` | — | `0` | no | Cap the number of generated iterations per stage (`0` = unlimited) |
+| `--no-rewrite-linked-values` | — | `false` | no | Disable replacing linked values with JSON pointers in output |
+| `--debug` | — | `false` | no | Enable detailed probe debug logs |
+
+**Example:**
+
+```bash
+slsbench probe-bodies \
+  -f ./flow.yaml \
+  -o ./openapi.yml \
+  -r ./probe-output \
+  -d ./docker-compose.yml \
+  -n petclinic \
+  -p 9966 \
+  --max-probe-target 500
+```
+
+### `slsbench harness`
+
+Orchestrates benchmark execution using flow stages, pre-generated probe-bodies iterations, Docker Compose, and `wrk2-flow` containers.
+
+**What it does:**
+
+1. Starts the service with Docker Compose
+2. Measures time to first successful response and writes `first_request_result.json`
+3. For each flow stage, runs one dedicated `wrk2-flow` container with the stage's probe data and wrk2 parameters
+4. Collects container resource stats (CPU, memory, network I/O) throughout the run
+5. Optionally copies mounted paths from the service container to results
+6. Tears down Docker Compose resources
+
+**Flags:**
+
+| Flag | Short | Default | Required | Description |
+|---|---|---|---|---|
+| `--flow-path` | `-f` | — | yes | Path to the flow DSL YAML file |
+| `--probe-bodies-path` | `-b` | — | yes | Path to probe-bodies result root (contains `<stage>/iteration-*.json`) |
+| `--openapi-spec-path` | `-o` | — | yes | Path to the OpenAPI spec file |
+| `--docker-compose-path` | `-d` | — | yes | Path to docker-compose.yml for the application |
+| `--service-name` | `-n` | — | yes | Service name in docker-compose to benchmark |
+| `--port` | `-p` | `8080` | no | Service port inside the Docker network |
+| `--result-path` | `-r` | `./result` | no | Base output path (a timestamped run directory is created inside) |
+| `--service-mount-path` | `-m` | `[]` | no | Paths inside service container to copy to results (repeatable) |
+| `--docker-socket-path` | — | `/var/run/docker.sock` | no | Docker socket path (for DooD mode) |
+| `--readiness-path` | — | `""` | no | Explicit HTTP readiness probe path (auto-derived from OpenAPI if empty) |
+| `--debug-non2xx` | — | `false` | no | Enable `FLOW_DEBUG_NON2XX=1` in wrk2 containers for non-2xx debug capture |
+
+**Example:**
+
+```bash
+slsbench harness \
+  -f ./flow.yaml \
+  -b ./probe-output/probe-bodies-result-2026-04-10-14:30:00 \
+  -o ./openapi.yml \
+  -d ./docker-compose.yml \
+  -n petclinic \
+  -p 9966 \
+  -r ./results \
+  -m /var/log/app
+```
+
+### Collecting Files from the Service Container
+
+Use `--service-mount-path` (`-m`) to copy files or directories from the service container to your results folder after benchmark completion:
+
+```bash
+slsbench harness -n myapp -m /var/log/app -m /tmp/metrics -m /tmp/recording.jfr
+```
+
+Collected files are saved in a `collected/` subdirectory within the results folder.
+
+## Running with Docker (DooD)
+
+The recommended way to run `slsbench` is inside a container using Docker-out-of-Docker — the container mounts the host Docker socket to control sibling containers.
+
+### Build the Image
+
+```bash
+docker build -t slsbench:dood .
+```
+
+### Probe Bodies (DooD)
 
 ```bash
 docker run --rm \
@@ -406,16 +309,15 @@ docker run --rm \
   -v "$(pwd)":/workspace \
   -w /workspace \
   slsbench:dood probe-bodies \
-  --flow-path /workspace/workdir/spring-petclinic-rest/flow.yaml \
-  --openapi-link /workspace/workdir/spring-petclinic-rest/openapi.yml \
-  --output-path /workspace/workdir/spring-petclinic-rest \
-  --docker-compose-path /workspace/workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  --service-name petclinic \
-  --port 9966 \
-  --docker-socket-path /var/run/docker.sock
+    --flow-path /workspace/flow.yaml \
+    --openapi-link /workspace/openapi.yml \
+    --output-path /workspace/probe-output \
+    --docker-compose-path /workspace/docker-compose.yml \
+    --service-name petclinic \
+    --port 9966
 ```
 
-#### Harness in DooD
+### Harness (DooD)
 
 ```bash
 docker run --rm \
@@ -423,57 +325,218 @@ docker run --rm \
   -v "$(pwd)":/workspace \
   -w /workspace \
   slsbench:dood harness \
-  --flow-path /workspace/workdir/spring-petclinic-rest/flow.yaml \
-  --probe-bodies-path /workspace/workdir/spring-petclinic-rest/probe-bodies-result-2026-04-03-14:45:00 \
-  --openapi-spec-path /workspace/workdir/spring-petclinic-rest/openapi.yml \
-  --docker-compose-path /workspace/workdir/spring-petclinic-rest/docker-compose.petclinic.yml \
-  --service-name petclinic \
-  --port 9966 \
-  --result-path /workspace/workdir/spring-petclinic-rest/results \
-  --docker-socket-path /var/run/docker.sock
+    --flow-path /workspace/flow.yaml \
+    --probe-bodies-path /workspace/probe-output/probe-bodies-result-<timestamp> \
+    --openapi-spec-path /workspace/openapi.yml \
+    --docker-compose-path /workspace/docker-compose.yml \
+    --service-name petclinic \
+    --port 9966 \
+    --result-path /workspace/results
 ```
 
-Required mounts:
-- Docker socket (`/var/run/docker.sock`) from host to container.
-- Project/workdir directory that contains `flow`, OpenAPI spec, compose file, and output directories.
+**Required mounts:**
 
-### Troubleshooting
+| Mount | Purpose |
+|---|---|
+| `/var/run/docker.sock` | Allows the container to control the host Docker daemon |
+| Project directory (e.g. `$(pwd):/workspace`) | Makes flow, OpenAPI, compose, and output files accessible |
 
-#### Enrich Command Issues
+All file paths passed to `slsbench` flags must use the **container-side** mount paths (e.g. `/workspace/...`).
 
-**Problem**: "Failed to open OpenAPI specification"
-- **Solution**: Ensure the file path is correct and the file is valid YAML or JSON
+## Output Structure
 
-**Problem**: "Failed to save enriched specification"
-- **Solution**: Check that the output directory exists and is writable
+### Probe Bodies Output
 
-#### Scenario Command Issues
+```
+probe-output/
+└── probe-bodies-result-YYYY-MM-DD-HH:MM:SS/
+    ├── <stage-name>/
+    │   ├── iteration-0.json
+    │   ├── iteration-1.json
+    │   └── ...
+    └── <stage-name>/
+        └── ...
+```
 
-**Problem**: "Failed to generate scenario"
-- **Solution**: Ensure you're using an enriched specification (from the `enrich` command), not the original
+Each `iteration-*.json` contains a complete stateful chain: an array of steps with resolved paths, request bodies, path parameters, query parameters, and response data.
 
-**Problem**: "Topological sort failed"
-- **Solution**: This is a warning, not an error. The scenario will still be generated, but endpoint order may be undefined if there are circular dependencies
+### Harness Output
 
-#### Harness Command Issues
+```
+results/
+└── harness-result-YYYY-MM-DD-HH:MM:SS/
+    ├── first_request_result.json         # First response latency measurement
+    ├── benchmark-container-stats.jsonl   # Continuous container resource stats (CPU, memory, network I/O, PIDs)
+    ├── wrk2-input/
+    │   └── <stage>/
+    │       └── iteration-*.json          # Input data used for this run
+    ├── wrk2-results/
+    │   └── <stage>/
+    │       ├── wrk2-output.txt           # wrk2 stdout (latency histogram, throughput)
+    │       └── container.log             # wrk2 container logs
+    └── collected/                        # Files copied from service container (if --service-mount-path was used)
+```
 
-**Problem**: "Docker is not running"
-- **Solution**: Start Docker daemon: `sudo systemctl start docker` (Linux) or start Docker Desktop
+## Project Structure
 
-**Problem**: "Service not found in docker-compose.yml"
-- **Solution**: Verify the `--service-name` matches exactly with the service name in your docker-compose.yml
+```
+serverless-benchmarking/
+├── cmd/slsbench/main.go              # CLI entry point
+├── build.sh                          # Build script with prerequisite checks
+├── Dockerfile                        # Multi-stage: Go builder + Python runtime
+├── go.mod / go.sum                   # Go module (github.com/d-iii-s/slsbench)
+├── internal/
+│   ├── cli/cli.go                    # Cobra CLI: root, harness, probe-bodies commands
+│   ├── model/structs.go              # Shared types (Config, ApiConfig, etc.)
+│   ├── utils/util.go                 # OpenAPI/YAML/JSON helpers, hint constants
+│   └── service/
+│       ├── harness/                  # Benchmark orchestration (compose lifecycle,
+│       │                             #   readiness, wrk2-flow runs, result collection)
+│       ├── bodyprobe/                # Probe-bodies orchestration (compose, Schemathesis
+│       │                             #   chain generation, 2xx filtering, iteration output)
+│       ├── flowgen/                  # Flow DSL parser, WRR body-count computation
+│       ├── datagen/                  # Python script invocation, stateful chain types
+│       ├── dslvalidator/             # Embedded JSON Schema validation for flow DSL
+│       │   └── schema/dsl.schema.json
+│       └── docker/                   # Docker client helpers (container creation, stats)
+├── scripts/
+│   ├── generate_bodies.py            # Schemathesis-based stateful chain generator
+│   └── requirements.txt              # Python dependencies (schemathesis==3.39.3)
+├── workload-generator/
+│   └── docker/
+│       ├── workload-generator-sessions.dockerfile  # wrk2-flow image (wrk2 + Lua scripts)
+│       └── src/                      # Lua scripts for wrk2 (flow execution, JSON, data gen)
+└── workdir/
+    └── spring-petclinic-rest/        # Example: flow.yaml, openapi.yml, docker-compose
+```
 
-**Problem**: "Failed to connect to network"
-- **Solution**: Ensure Docker Compose can create networks. Try running `docker network ls` to check
+### Key Internal Packages
 
-**Problem**: "Port already in use"
-- **Solution**: Either stop the service using the port or change the `--port` value
+| Package | Purpose |
+|---|---|
+| `cli` | Cobra command definitions, flag registration, DSL validation dispatch |
+| `harness` | Full benchmark lifecycle: compose up, readiness wait, first-response measurement, per-stage wrk2-flow execution, container stats collection, result layout |
+| `bodyprobe` | Probe lifecycle: compose up, readiness wait, Schemathesis chain generation per stage, 2xx acceptance filtering, iteration file output |
+| `flowgen` | Parses the flow DSL YAML, computes per-node body counts using wrk2 params and Weighted Round Robin |
+| `datagen` | Invokes `scripts/generate_bodies.py`, defines `StatefulChain`/`StatefulStep` types, handles JSON pointer conventions |
+| `dslvalidator` | Embeds and compiles `dsl.schema.json`; validates parsed flow documents at startup |
+| `docker` | Low-level Docker client helpers: workload container creation, bind mounts, container stats streaming/export |
 
-### Tips and Best Practices
+## OpenAPI Requirements
 
-1. **Organize Your Files**: Keep enriched specs, scenarios, and results in separate directories
-2. **Use Timestamps**: The tool automatically adds timestamps to outputs, making it easy to track versions
-3. **Test Incrementally**: Start with a small API subset before benchmarking the entire API
-4. **Monitor Resources**: Check `container-stats.csv` to understand resource usage patterns
-5. **Customize wrk2**: Adjust `--wrk2params` based on your performance testing needs
-6. **Clean Up**: The harness automatically cleans up containers, but you can manually clean with `docker compose down`
+For `slsbench` to generate valid stateful chains, your OpenAPI specification should include:
+
+- **`operationId`** on every operation referenced in the flow DSL
+- **OpenAPI Links** (`components/links`) defining transitions between operations — these are what Schemathesis uses to build multi-step chains
+- **`servers`** with a valid base URL (used for readiness probe auto-derivation)
+- **Schema constraints** (`pattern`, `minLength`, `maxLength`, `minimum`, `maximum`) for request body properties — tighter constraints produce more realistic test data
+
+Example link definition:
+
+```yaml
+paths:
+  /api/owners:
+    post:
+      operationId: addOwner
+      responses:
+        '201':
+          description: Owner created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Owner'
+          links:
+            GetOwnerAfterCreate:
+              $ref: '#/components/links/GetOwnerAfterCreate'
+
+components:
+  links:
+    GetOwnerAfterCreate:
+      operationId: getOwner
+      parameters:
+        ownerId: '$response.body#/id'
+```
+
+## Troubleshooting
+
+### Docker Issues
+
+**"Docker is not running"**
+Start the Docker daemon: `sudo systemctl start docker` (Linux) or start Docker Desktop.
+
+**"Port already in use"**
+Stop the service using the port, or clean up orphaned containers:
+
+```bash
+docker stop $(docker ps -q) && docker rm $(docker ps -aq)
+docker network prune -f
+```
+
+**"Service not found in docker-compose.yml"**
+Verify `--service-name` matches exactly with the service name in your compose file.
+
+### Probe Bodies Issues
+
+**Generation is very slow**
+Use `--max-probe-target <N>` to cap the number of iterations generated per stage. A value of 500 is usually sufficient:
+
+```bash
+slsbench probe-bodies ... --max-probe-target 500
+```
+
+**"cannot transition from X to Y using OpenAPI links"**
+The OpenAPI specification is missing a link definition between the two operations. Add the appropriate link to the source operation's response under `links:` and define it in `components/links`.
+
+**"call failed at chain step ... after 100 attempt(s)"**
+Schemathesis could not produce a valid request after 100 tries. Check that schema constraints are not contradictory and that the target endpoint accepts the data shapes defined in the spec.
+
+### Harness Issues
+
+**wrk2 container exits with code 134**
+This is typically a `SIGABRT` from wrk2's HdrHistogram when latency values exceed the configured maximum trackable value. This can happen under extreme cold-start latency or when the target rate far exceeds the application's capacity.
+
+**wrk2 outputs `NaN` for throughput**
+wrk2 requires a minimum test duration of approximately 30 seconds to compute stable throughput metrics. Increase the `-d` parameter in `wrk2params`.
+
+### Tips
+
+- Generate probe bodies once, then reuse them across multiple harness runs with different wrk2 parameters.
+- Start with a low request rate (`-R50`) to verify the flow works, then scale up.
+- Use `--debug` (probe-bodies) or `--debug-non2xx` (harness) to diagnose unexpected failures.
+- Check `benchmark-container-stats.jsonl` to understand CPU and memory pressure during the run.
+- Clean up between runs: `docker compose down && docker volume prune -f`.
+
+## Docker Compose Requirements
+
+Your `docker-compose.yml` should:
+
+1. Define the service to benchmark with a name matching `--service-name`
+2. Expose the service on the port specified with `--port`
+3. Be compatible with Docker Compose v2
+
+Example:
+
+```yaml
+services:
+  petclinic:
+    image: petclinic:latest
+    ports:
+      - "9966:9966"
+    environment:
+      - SERVER_PORT=9966
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASSWORD: petclinic
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petclinic"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+```
