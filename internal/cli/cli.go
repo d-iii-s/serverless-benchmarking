@@ -17,7 +17,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "slsbench",
 	Short: "Serverless Benchmarking Tool",
-	Long:  `Serverless Benchmarking Tool - A comprehensive framework for evaluating the performance of serverless and containerized Java workloads.`,
+	Long:  `Serverless Benchmarking Tool - A comprehensive framework for scenario-based performance evaluation of serverless and containerized HTTP workloads.`,
 }
 
 var harnessCmd = &cobra.Command{
@@ -34,7 +34,7 @@ This command orchestrates the benchmark execution by:
 - Cleaning up resources`,
 	Example: `  slsbench harness \
     --flow-path ./flow.yaml \
-    --probe-bodies-path ./result-probe/result-2026-04-03-14:45:00 \
+    --probe-bodies-path ./probe-bodies-result-2026-04-03T14-45-00 \
     --openapi-spec-path ./openapi.yml \
     --docker-compose-path ./docker-compose.yml \
     --service-name petclinic \

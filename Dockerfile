@@ -12,9 +12,11 @@ FROM python:3.12-slim-bookworm
 
 WORKDIR /opt/slsbench
 
+COPY scripts/requirements.txt ./scripts/requirements.txt
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && pip install --no-cache-dir 'schemathesis>=3.39,<4' \
+    && pip install --no-cache-dir -r scripts/requirements.txt \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/slsbench /usr/local/bin/slsbench

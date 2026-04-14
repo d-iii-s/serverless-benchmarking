@@ -22,7 +22,7 @@ RUN \
     # Install additional libs
     apt-get install luarocks -y && apt-get install libyaml-dev -y && apt-get clean && \
     mkdir /root/.luarocks/ && \
-    export export LUAJIT_LIB=/tmp/wrk2/deps/luajit && luarocks config variables.LUAJIT_LIB $LUAJIT_LIB && \
+    export LUAJIT_LIB=/tmp/wrk2/deps/luajit && luarocks config variables.LUAJIT_LIB $LUAJIT_LIB && \
     luarocks install luaposix && luarocks install luasocket &&  luarocks install faker2 && luarocks --server=http://rocks.moonscript.org install lyaml && \
     make && cp /tmp/wrk2/wrk /usr/local/bin/wrk2
 
