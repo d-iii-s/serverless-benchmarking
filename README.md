@@ -2,6 +2,16 @@
 
 A scenario-based benchmarking framework for serverless and containerized applications. Instead of reducing an application to isolated endpoint probes or a single aggregate latency number, `slsbench` derives stateful, link-aware API request chains from **OpenAPI specifications** and executes them through a **flow DSL** that models realistic usage patterns. The intent is to benchmark how applications are used in practice: multi-step CRUD behavior, weighted branching, reusable scenario instances, and phase-aware execution under configurable [wrk2](https://github.com/giltene/wrk2) load.
 
+## Quick Links
+
+- Repository: [d-iii-s/serverless-benchmarking](https://github.com/d-iii-s/serverless-benchmarking)
+- Companion harness examples: [BakhtinArtem/harness-evaluation](https://github.com/BakhtinArtem/harness-evaluation)
+- Docker image: `aape2k/slsbench:v3.0.0`
+- Latest release: [v3.0.0](https://github.com/d-iii-s/serverless-benchmarking/releases/tag/v3.0.0)
+- Changelog: [CHANGELOG.md](./CHANGELOG.md)
+- Contributing: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- License: [LICENSE](./LICENSE)
+
 ## Architecture
 
 ```mermaid
@@ -73,7 +83,7 @@ When running via the Docker image (recommended), Go and Python are not needed on
 ### Option 1: Build from Source
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/d-iii-s/serverless-benchmarking.git
 cd serverless-benchmarking
 ```
 
@@ -98,7 +108,7 @@ sudo mv slsbench /usr/local/bin/
 ### Option 2: Docker Image (Recommended for DooD)
 
 ```bash
-docker build -t slsbench:dood .
+docker build -t aape2k/slsbench:v3.0.0 .
 ```
 
 The image bundles Go-built `slsbench`, Python 3.12 with Schemathesis, and all required scripts. Use it with Docker-out-of-Docker by mounting the host Docker socket.
@@ -134,7 +144,7 @@ slsbench harness \
   --result-path ./results
 ```
 
-An example application setup (flow DSL, OpenAPI spec, Docker Compose) can be found in the companion evaluation harness repository.
+An example application setup (flow DSL, OpenAPI spec, Docker Compose) is available in the companion harness repository: [BakhtinArtem/harness-evaluation](https://github.com/BakhtinArtem/harness-evaluation).
 
 ## Flow DSL Reference
 
@@ -389,7 +399,7 @@ The recommended way to run `slsbench` is inside a container using Docker-out-of-
 ### Build the Image
 
 ```bash
-docker build -t slsbench:dood .
+docker build -t aape2k/slsbench:v3.0.0 .
 ```
 
 ### Probe Bodies (DooD)
@@ -399,7 +409,7 @@ docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$(pwd)":/workspace \
   -w /workspace \
-  slsbench:dood probe-bodies \
+  aape2k/slsbench:v3.0.0 probe-bodies \
     --flow-path /workspace/flow.yaml \
     --openapi-link /workspace/openapi.yml \
     --output-path /workspace/probe-output \
@@ -415,7 +425,7 @@ docker run --rm \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$(pwd)":/workspace \
   -w /workspace \
-  slsbench:dood harness \
+  aape2k/slsbench:v3.0.0 harness \
     --flow-path /workspace/flow.yaml \
     --probe-bodies-path /workspace/probe-output/probe-bodies-result-<timestamp> \
     --openapi-spec-path /workspace/openapi.yml \
@@ -436,8 +446,8 @@ All file paths passed to `slsbench` flags must use the **container-side** mount 
 
 ```mermaid
 flowchart LR
-    User["User shell"] --> RunCmd["docker run slsbench:dood"]
-    RunCmd --> Dood["slsbench:dood container"]
+    User["User shell"] --> RunCmd["docker run aape2k/slsbench:v3.0.0"]
+    RunCmd --> Dood["aape2k/slsbench:v3.0.0 container"]
     Workspace["bind mount\n$(pwd) -> /workspace"] --> Dood
     Socket["bind mount\n/var/run/docker.sock"] --> Dood
     Dood --> HostDocker["host Docker daemon"]
