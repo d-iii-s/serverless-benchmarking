@@ -1,3 +1,8 @@
+# Deprecated CI definition.
+# GitHub Actions (.github/workflows/ci.yml) is the authoritative pipeline
+# used for tests, builds, and GitHub releases.
+# This file is kept only for legacy/self-hosted GitLab compatibility.
+
 stages:
   - build
   - test
