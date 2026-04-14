@@ -7,4 +7,13 @@ workdir/
 build/
 scripts/.hypothesis/
 internal/service/datagen/.hypothesis/
+internal/service/flowgen/.hypothesis/
 .hypothesis/
+
+# Compiled binaries
+slsbench
+cmd/slsbench/slsbench
+
+# Python bytecache
+__pycache__/
+*.pyc

@@ -1,6 +1,6 @@
 # slsbench — Serverless Benchmark Suite
 
-A scenario-based benchmarking framework for serverless and containerized applications. Instead of isolated micro-benchmarks with hardcoded requests, `slsbench` derives stateful, link-aware API request chains from **OpenAPI specifications** and executes them through a **flow DSL** that models realistic usage patterns — including weighted transitions, multi-step CRUD flows, and configurable load profiles via [wrk2](https://github.com/giltene/wrk2).
+A scenario-based benchmarking framework for serverless and containerized applications. Instead of reducing an application to isolated endpoint probes or a single aggregate latency number, `slsbench` derives stateful, link-aware API request chains from **OpenAPI specifications** and executes them through a **flow DSL** that models realistic usage patterns. The intent is to benchmark how applications are used in practice: multi-step CRUD behavior, weighted branching, reusable scenario instances, and phase-aware execution under configurable [wrk2](https://github.com/giltene/wrk2) load.
 
 ## Architecture
 
@@ -14,16 +14,28 @@ flowchart LR
 
     subgraph phase1 [Phase 1: Probe Bodies]
         PB["slsbench probe-bodies"]
+        Flowgen["flowgen + dslvalidator"]
+        Datagen["datagen -> generate_bodies.py"]
         Schemathesis["Schemathesis\n(stateful chains)"]
-        PB --> Schemathesis
-        Schemathesis --> Iterations["iteration-*.json\n(accepted 2xx chains)"]
+        Accepted["2xx filtering"]
+        Iterations["probe-bodies-result-<timestamp>\nper-stage iteration-*.json"]
+        PB --> Flowgen
+        Flowgen --> Datagen
+        Datagen --> Schemathesis
+        Schemathesis --> Accepted
+        Accepted --> Iterations
     end
 
     subgraph phase2 [Phase 2: Harness]
         H["slsbench harness"]
+        FirstResponse["first_request_result.json"]
+        Stats["benchmark-container-stats.jsonl"]
         WRK2["wrk2-flow containers\n(one per stage)"]
+        Results["harness-result-<timestamp>\nwrk2-results + collected/"]
+        H --> FirstResponse
+        H --> Stats
         H --> WRK2
-        WRK2 --> Results["Harness Results\n(latency, throughput,\ncontainer stats)"]
+        WRK2 --> Results
     end
 
     FlowDSL --> PB
@@ -36,9 +48,15 @@ flowchart LR
     Iterations --> H
 ```
 
-**Phase 1 — `probe-bodies`**: Starts the application via Docker Compose, generates stateful API chains using [Schemathesis](https://schemathesis.readthedocs.io/) (respecting OpenAPI Links), executes them against the live service, and persists only 2xx-accepted iterations.
+**Phase 1 — `probe-bodies`**: Starts the application via Docker Compose, validates the Flow DSL, delegates stateful chain generation to `generate_bodies.py` through `datagen`, executes chains using [Schemathesis](https://schemathesis.readthedocs.io/) (respecting OpenAPI Links), and persists only 2xx-accepted iterations.
 
-**Phase 2 — `harness`**: Starts the application, measures time-to-first-response, then runs one `wrk2-flow` container per flow stage using the pre-generated iterations. Collects latency histograms, throughput data, and container resource stats.
+**Phase 2 — `harness`**: Starts the application, measures time-to-first-response, streams container stats for the benchmarked service, then runs one `wrk2-flow` container per flow stage using the pre-generated iterations. Collects latency histograms, throughput data, and optional copied artifacts from the service container.
+
+## Why This Matters
+
+`slsbench` is designed for evaluations where realistic usage structure matters as much as raw request rate. Traditional microbenchmark-style load tests are useful for aggregate throughput and latency, but they flatten away how an application behaves across dependent operations, branching flows, cold start, and steady state.
+
+The two-phase design addresses that gap. `probe-bodies` separates scenario validity from measurement by materializing reusable `iteration-*.json` chains that already reflect valid state transitions. `harness` then replays those validated chains under controlled load, while also recording first-response timing and container-level resource stats. This gives a stronger basis for comparing frameworks and runtime configurations because the benchmark is driven by realistic scenario instances rather than ad hoc request scripts.
 
 ## Prerequisites
 
@@ -116,11 +134,11 @@ slsbench harness \
   --result-path ./results
 ```
 
-A bundled example application is available under `workdir/spring-petclinic-rest/` with a pre-configured `flow.yaml`, `openapi.yml`, and `docker-compose.petclinic.yml`.
+An example application setup (flow DSL, OpenAPI spec, Docker Compose) can be found in the companion evaluation harness repository.
 
 ## Flow DSL Reference
 
-Benchmark scenarios are defined in a YAML file validated against a [JSON Schema](internal/service/dslvalidator/schema/dsl.schema.json). The top-level key is `stages`, where each stage defines wrk2 parameters and a directed flow graph of API operations.
+Benchmark scenarios are defined in a YAML file validated against a [JSON Schema](internal/service/dslvalidator/schema/dsl.schema.json). The top-level key is `stages`, where each stage combines two things: a load profile (`wrk2params`) and a directed usage model (`flow`). In other words, the Flow DSL is not just an input format. It is the structured representation of application behavior that turns specification-level API operations into an executable workload scenario.
 
 ### Schema
 
@@ -195,11 +213,27 @@ stages:
 
 The flow graph supports weighted round-robin (WRR) transitions. Leaf nodes (no edges) are terminal — the iteration ends there and a new one starts from the entry node.
 
+```mermaid
+flowchart LR
+    Entry["createOwner\nentrynode=true"] -->|"0.40"| ListOwners["listOwners"]
+    Entry -->|"0.30"| CreatePetType["createPetType"]
+    Entry -->|"0.30"| CreateVet["createVet"]
+    CreatePetType -->|"0.50"| GetPetType["getPetType"]
+    CreatePetType -->|"0.50"| DeletePetType["deletePetType"]
+    ListOwners --> EndNode["terminal step"]
+    CreateVet --> EndNode
+    GetPetType --> EndNode
+    DeletePetType --> EndNode
+    EndNode -->|"next iteration restarts"| Entry
+```
+
+This graph is the runtime meaning of the YAML: one node is the entry point, outgoing edges are weighted, terminal nodes end the current iteration, and the next iteration starts again from the entry node. That makes the Flow DSL a compact way to express scenario shape: where a user journey begins, how it branches, which operations are likely to dominate, and how request-rate settings should be applied during replay.
+
 ## Command Reference
 
 ### `slsbench probe-bodies`
 
-Generates stateful, link-aware API chains using Schemathesis against a running application and persists accepted chain artifacts for use by the harness.
+Generates stateful, link-aware API chains using Schemathesis against a running application and persists accepted chain artifacts for use by the harness. Methodologically, this is the phase that materializes realistic scenario instances before any performance measurement is interpreted.
 
 **What it does:**
 
@@ -208,6 +242,33 @@ Generates stateful, link-aware API chains using Schemathesis against a running a
 3. For each flow stage, generates stateful API chains via Schemathesis, filtering for 2xx-accepted responses
 4. Writes accepted iterations as `iteration-*.json` files under `<output-path>/probe-bodies-result-<timestamp>/<stage>/`
 5. Tears down Docker Compose resources
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as Probe CLI
+    participant Validator as Flow validation
+    participant Compose as Docker Compose
+    participant App as Target Service
+    participant Datagen as datagen
+    participant Py as Python generator
+    participant Out as Probe output
+
+    User->>CLI: run probe-bodies
+    CLI->>Validator: validate Flow DSL
+    CLI->>Compose: compose up
+    CLI->>App: readiness probe
+    loop for each stage
+        CLI->>Datagen: request stage chains
+        Datagen->>Py: invoke Python generator
+        Py->>App: execute stateful chains via Schemathesis
+        Py-->>CLI: accepted + rejected chains
+        CLI->>Out: write accepted iteration-*.json
+    end
+    CLI->>Compose: compose down
+```
+
+`probe-bodies` is stage-oriented rather than endpoint-oriented. The Go service validates the flow, then hands chain generation to `scripts/generate_bodies.py` through `datagen`, which uses Schemathesis and OpenAPI Links to build valid stateful chains. Only accepted 2xx chains are persisted because the goal is to benchmark scenario execution, not repeatedly rediscover invalid payloads or broken state transitions during later load tests.
 
 **Flags:**
 
@@ -240,7 +301,7 @@ slsbench probe-bodies \
 
 ### `slsbench harness`
 
-Orchestrates benchmark execution using flow stages, pre-generated probe-bodies iterations, Docker Compose, and `wrk2-flow` containers.
+Orchestrates benchmark execution using flow stages, pre-generated probe-bodies iterations, Docker Compose, and `wrk2-flow` containers. This is the execution phase: it replays already-validated scenarios under controlled load so that the resulting measurements can be interpreted as performance evidence rather than scenario-generation noise.
 
 **What it does:**
 
@@ -250,6 +311,36 @@ Orchestrates benchmark execution using flow stages, pre-generated probe-bodies i
 4. Collects container resource stats (CPU, memory, network I/O) throughout the run
 5. Optionally copies mounted paths from the service container to results
 6. Tears down Docker Compose resources
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as Harness CLI
+    participant Validator as Flow validation
+    participant Compose as Docker Compose
+    participant App as Target Service
+    participant Stats as Stats collector
+    participant WRK as wrk2-flow
+    participant Out as Harness output
+
+    User->>CLI: run harness
+    CLI->>Validator: validate Flow DSL
+    CLI->>Compose: compose up
+    CLI->>App: readiness probe
+    CLI->>Out: write first_request_result.json
+    CLI->>Stats: start service container stats stream
+    loop for each stage
+        CLI->>WRK: mount stage iterations + wrk2params
+        WRK->>App: execute flow workload
+        WRK->>Out: write wrk2-results + wrk2-input
+    end
+    opt service-mount-path configured
+        CLI->>Out: copy files into collected/
+    end
+    CLI->>Compose: compose down
+```
+
+Unlike `probe-bodies`, `harness` consumes previously generated iterations as input. It adds first-response measurement for cold-start-oriented analysis, service container stats for resource interpretation, per-stage `wrk2-flow` execution for sustained-load behavior, and optional artifact collection in a single benchmark run.
 
 **Flags:**
 
@@ -343,6 +434,19 @@ docker run --rm \
 
 All file paths passed to `slsbench` flags must use the **container-side** mount paths (e.g. `/workspace/...`).
 
+```mermaid
+flowchart LR
+    User["User shell"] --> RunCmd["docker run slsbench:dood"]
+    RunCmd --> Dood["slsbench:dood container"]
+    Workspace["bind mount\n$(pwd) -> /workspace"] --> Dood
+    Socket["bind mount\n/var/run/docker.sock"] --> Dood
+    Dood --> HostDocker["host Docker daemon"]
+    HostDocker --> AppContainers["application containers\nfrom docker-compose"]
+    HostDocker --> BenchContainers["wrk2-flow / helper containers"]
+```
+
+In DooD mode, `slsbench` itself runs inside a container, but all benchmark and application containers are created by the **host** Docker daemon through the mounted socket. That is why every path passed on the command line must use container-side mount locations such as `/workspace/...`.
+
 ## Output Structure
 
 ### Probe Bodies Output
@@ -351,14 +455,14 @@ All file paths passed to `slsbench` flags must use the **container-side** mount 
 probe-output/
 └── probe-bodies-result-YYYY-MM-DD-HH:MM:SS/
     ├── <stage-name>/
-    │   ├── iteration-0.json
-    │   ├── iteration-1.json
+    │   ├── iteration-000001.json
+    │   ├── iteration-000002.json
     │   └── ...
     └── <stage-name>/
         └── ...
 ```
 
-Each `iteration-*.json` contains a complete stateful chain: an array of steps with resolved paths, request bodies, path parameters, query parameters, and response data.
+Each `iteration-*.json` contains a complete stateful chain: an array of steps with resolved paths, request bodies, path parameters, query parameters, and response data. These files are the reusable scenario instances that let the same validated workload be replayed across repeated benchmark runs.
 
 ### Harness Output
 
@@ -368,14 +472,27 @@ results/
     ├── first_request_result.json         # First response latency measurement
     ├── benchmark-container-stats.jsonl   # Continuous container resource stats (CPU, memory, network I/O, PIDs)
     ├── wrk2-input/
-    │   └── <stage>/
-    │       └── iteration-*.json          # Input data used for this run
+    │   └── <sanitized-stage>/            # Stage input copied for the run
+    │       └── iteration-*.json
     ├── wrk2-results/
-    │   └── <stage>/
+    │   └── <sanitized-stage>/
     │       ├── wrk2-output.txt           # wrk2 stdout (latency histogram, throughput)
     │       └── container.log             # wrk2 container logs
     └── collected/                        # Files copied from service container (if --service-mount-path was used)
 ```
+
+The output layout is meant to preserve an auditable path from workload definition to measurement artifact. `probe-bodies` preserves the concrete scenario instances that were accepted. `harness` preserves both the replay inputs and the measurement outputs, so later analysis can inspect not only latency and throughput, but also first-response timing, resource pressure, and any copied service-side evidence.
+
+## Questions This Helps Answer
+
+The generated artifacts are intended to support analysis questions that are hard to answer with a single aggregate benchmark number:
+
+- Which operations dominate latency inside a realistic scenario?
+- How does first-response behavior differ from warmed steady-state execution?
+- Do different scenario shapes stress the same application differently?
+- Which framework or runtime configuration handles a given scenario more effectively?
+
+That is the main analytical purpose of `slsbench`: to make scenario-level evidence inspectable enough to support better engineering and research decisions than endpoint-isolated or purely aggregate load testing alone.
 
 ## Project Structure
 
@@ -387,8 +504,7 @@ serverless-benchmarking/
 ├── go.mod / go.sum                   # Go module (github.com/d-iii-s/slsbench)
 ├── internal/
 │   ├── cli/cli.go                    # Cobra CLI: root, harness, probe-bodies commands
-│   ├── model/structs.go              # Shared types (Config, ApiConfig, etc.)
-│   ├── utils/util.go                 # OpenAPI/YAML/JSON helpers, hint constants
+│   ├── utils/util.go                 # JSON helpers, result directory creation
 │   └── service/
 │       ├── harness/                  # Benchmark orchestration (compose lifecycle,
 │       │                             #   readiness, wrk2-flow runs, result collection)
@@ -398,7 +514,7 @@ serverless-benchmarking/
 │       ├── datagen/                  # Python script invocation, stateful chain types
 │       ├── dslvalidator/             # Embedded JSON Schema validation for flow DSL
 │       │   └── schema/dsl.schema.json
-│       └── docker/                   # Docker client helpers (container creation, stats)
+│       └── docker/                   # Docker client helper (CopyFromContainer)
 ├── scripts/
 │   ├── generate_bodies.py            # Schemathesis-based stateful chain generator
 │   └── requirements.txt              # Python dependencies (schemathesis==3.39.3)
@@ -406,8 +522,6 @@ serverless-benchmarking/
 │   └── docker/
 │       ├── workload-generator-sessions.dockerfile  # wrk2-flow image (wrk2 + Lua scripts)
 │       └── src/                      # Lua scripts for wrk2 (flow execution, JSON, data gen)
-└── workdir/
-    └── spring-petclinic-rest/        # Example: flow.yaml, openapi.yml, docker-compose
 ```
 
 ### Key Internal Packages
@@ -430,6 +544,19 @@ For `slsbench` to generate valid stateful chains, your OpenAPI specification sho
 - **OpenAPI Links** (`components/links`) defining transitions between operations — these are what Schemathesis uses to build multi-step chains
 - **`servers`** with a valid base URL (used for readiness probe auto-derivation)
 - **Schema constraints** (`pattern`, `minLength`, `maxLength`, `minimum`, `maximum`) for request body properties — tighter constraints produce more realistic test data
+
+```mermaid
+flowchart LR
+    Spec["OpenAPI specification"] --> OpIds["operationId\nresolve flow nodes"]
+    Spec --> Links["components/links\nbuild stateful transitions"]
+    Spec --> Servers["servers\nderive readiness base path"]
+    OpIds --> FlowRuntime["flow node -> HTTP method/path"]
+    Links --> ProbeRuntime["probe-bodies chain generation"]
+    Servers --> Ready["readiness probe path"]
+    ReadyPath["--readiness-path override"] --> Ready
+```
+
+OpenAPI does three separate jobs in `slsbench`: it resolves flow nodes to real operations through `operationId`, provides state transitions through `components/links`, and helps determine the readiness probe path through `servers` unless you explicitly override it. Together with the Flow DSL, this forms the bridge from specification-level application description to executable performance scenarios.
 
 Example link definition:
 

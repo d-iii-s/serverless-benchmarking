@@ -15,15 +15,13 @@ build:
   image: golang:$GO_VERSION
   script:
     - go mod tidy
-    - cd cmd/tool
-    - go build -o serverless-benchmark .
-    - mv serverless-benchmark $CI_PROJECT_DIR/
+    - go build -o slsbench ./cmd/slsbench
   artifacts:
     paths:
-      - serverless-benchmark
+      - slsbench
 
 test:
   stage: test
   image: golang:$GO_VERSION
   script:
-    - go test ./internal/service/scenario-builder ./internal/service/enrich ./internal/service/walker
+    - go test ./internal/service/flowgen ./internal/service/datagen ./internal/service/dslvalidator ./internal/service/bodyprobe ./internal/service/harness
