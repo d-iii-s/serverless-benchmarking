@@ -1,0 +1,37 @@
+stages:
+  stage1:
+    wrk2params: -t2 -c100 -d30s -R2000
+    flow:
+      - node1:
+        operationId: createUserV1
+        endpoint: /api/v1/users
+        method: POST
+        entrynode: true
+        edges:
+          - to: node2
+            weight: 0.3
+          - to: node3
+            weight: 0.7
+      - node2:
+        operationId: getUserV1
+        endpoint: /api/v1/users/{id}
+        method: GET
+      - node3:
+        operationId: getUserV2
+        endpoint: /api/v2/users/{id}
+        method: GET
+  stage2:
+    wrk2params: -t2 -c100 -d30s -R2000
+    flow:
+      - node1:
+        operationId: createUserV1
+        endpoint: /api/v1/users
+        method: POST
+        entrynode: true
+        edges:
+          - to: node2
+            weight: 0.7
+      - node2:
+        operationId: getUserV1
+        endpoint: /api/v1/users/{id}
+        method: GET

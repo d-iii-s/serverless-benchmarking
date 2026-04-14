@@ -1,0 +1,38 @@
+stages:
+  stage1:
+    wrk2params: -t2 -c100 -d30s -R2000
+    flow:
+      - node1:
+        operationId: createPet
+        endpoint: /pets
+        method: POST
+        entrynode: true
+        edges:
+          - to: node2
+            weight: 0.3
+          - to: node3
+            weight: 0.7
+      - node2:
+        operationId: getPetV1
+        endpoint: /pets/{id}
+        method: GET
+      - node3:
+        operationId: getPetV2
+        endpoint: /pets/{id}
+        method: GET
+  stage2:
+    wrk2params: -t2 -c100 -d10s -R1000
+    flow:
+      - node1:
+        operationId: createPet
+        endpoint: /pets
+        method: POST
+        entrynode: true
+        edges:
+          - to: node2
+            weight: 1.0
+      - node2:
+        operationId: getPetV1
+        endpoint: /pets/{id}
+        method: GET
+

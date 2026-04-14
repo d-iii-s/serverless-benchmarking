@@ -3,11 +3,11 @@ name: CI
 on:
   push:
     branches:
-      - extension-mechanism-redesign
+      - refactor
       - main
   pull_request:
     branches:
-      - extension-mechanism-redesign
+      - refactor
       - main
 
 jobs:
@@ -35,7 +35,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./internal/service/scenario-builder ./internal/service/enrich ./internal/service/walker
+        run: go test ./internal/service/flowgen ./internal/service/datagen ./internal/service/dslvalidator ./internal/service/bodyprobe ./internal/service/harness
 
   build:
     name: Build

@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
-	"github.com/d-iii-s/slsbench/internal/model"
-	enricher "github.com/d-iii-s/slsbench/internal/service/enrich"
+	"github.com/d-iii-s/slsbench/internal/service/bodyprobe"
+	"github.com/d-iii-s/slsbench/internal/service/dslvalidator"
 	"github.com/d-iii-s/slsbench/internal/service/harness"
-	scenario_builder "github.com/d-iii-s/slsbench/internal/service/scenario-builder"
 	"github.com/d-iii-s/slsbench/internal/utils"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var rootCmd = &cobra.Command{
@@ -21,91 +20,147 @@ var rootCmd = &cobra.Command{
 	Long:  `Serverless Benchmarking Tool - A comprehensive framework for evaluating the performance of serverless and containerized Java workloads.`,
 }
 
-var enrichCmd = &cobra.Command{
-	Use:   "enrich",
-	Short: "Enrich an OpenAPI specification file with additional metadata",
-	Long: `Enrich an OpenAPI specification file with additional metadata.
-
-This command processes an OpenAPI specification file and adds additional metadata
-that is required for generating benchmark scenarios.`,
-	Example: `  slsbench enrich -specification-path ./api.yaml -output-path ./enriched
-  slsbench enrich -specification-path ./api.yaml`,
-	RunE: runEnrich,
-}
-
-var scenarioCmd = &cobra.Command{
-	Use:   "scenario",
-	Short: "Generate a scenario file from an enriched OpenAPI specification",
-	Long: `Generate a scenario file from an enriched OpenAPI specification.
-
-This command takes an enriched OpenAPI specification and generates a scenario file
-that can be used with the harness command to run benchmarks.`,
-	Example: `  slsbench scenario -enriched-specification-path ./enriched-spec.yaml -output-path ./scenarios
-  slsbench scenario -enriched-specification-path ./enriched-spec.yaml`,
-	RunE: runScenario,
-}
-
 var harnessCmd = &cobra.Command{
 	Use:   "harness",
-	Short: "Run benchmark harness against a service using a scenario file",
-	Long: `Run benchmark harness against a service using a scenario file.
+	Short: "Run flow-driven benchmark harness against a service",
+	Long: `Run benchmark harness against a service using flow stages and
+probe-bodies generated iterations.
 
 This command orchestrates the benchmark execution by:
 - Starting the service using Docker Compose
-- Running workload tests using wrk2
-- Collecting performance metrics
-- Copying specified paths from the service container to results
+- Measuring first successful response time
+- Running wrk2-flow workloads per flow step
+- Copying an optional mounted path from the service container to results
 - Cleaning up resources`,
-	Example: `  slsbench harness -scenario-path ./scenario.json -service-name myapp -port 8080
-  slsbench harness -scenario-path ./scenario.json -service-name myapp -wrk2params "-t4 -c200 -d60s -R5000"
-  slsbench harness -s ./scenario.json -n myapp -c /var/log/app,/tmp/metrics`,
+	Example: `  slsbench harness \
+    --flow-path ./flow.yaml \
+    --probe-bodies-path ./result-probe/result-2026-04-03-14:45:00 \
+    --openapi-spec-path ./openapi.yml \
+    --docker-compose-path ./docker-compose.yml \
+    --service-name petclinic \
+    --port 9966 \
+    --result-path ./result \
+    --service-mount-path /var/log/app \
+    --docker-socket-path /var/run/docker.sock`,
 	RunE: runHarness,
 }
 
+var probeBodiesCmd = &cobra.Command{
+	Use:   "probe-bodies",
+	Short: "Generate and probe stateful link-aware API chains",
+	Long: `Generate Schemathesis stateful chains (OpenAPI links-aware) and execute
+them against the running application, then persist accepted chain artifacts.`,
+	RunE: runProbeBodies,
+}
+
 var (
-	// Enrich flags
-	enrichSpecificationPath string
-	enrichOutputPath        string
-
-	// Scenario flags
-	scenarioEnrichedSpecPath string
-	scenarioOutputPath       string
-
 	// Harness flags
-	harnessScenarioPath      string
-	harnessWrk2Params        string
+	harnessFlowPath          string
+	harnessProbeBodiesPath   string
+	openApiSpecPath          string
 	harnessPort              int
 	harnessResultPath        string
 	harnessDockerComposePath string
 	harnessServiceName       string
-	harnessCollectPaths      []string
+	harnessServiceMountPaths []string
+	harnessDockerSocketPath  string
+	harnessDebugNon2xx       bool
+	harnessReadinessPath     string
+
+	// Probe command flags
+	probeFlowPath          string
+	probeOpenAPILink       string
+	probeOutputPath        string
+	probeDockerComposePath string
+	probeDockerSocketPath  string
+	probeServiceName       string
+	probePort              int
+	probeDebug             bool
+	probeNoRewriteLinked   bool
+	probeReadinessPath     string
+	probeMaxTarget         int
 )
 
 func init() {
-	// Enrich command flags
-	enrichCmd.Flags().StringVarP(&enrichSpecificationPath, "specification-path", "s", "", "Path to the OpenAPI specification file to enrich (required)")
-	enrichCmd.MarkFlagRequired("specification-path")
-	enrichCmd.Flags().StringVarP(&enrichOutputPath, "output-path", "o", "./enriched-spec.yaml", "Path to save the enriched OpenAPI specification file")
+	// Harness flags
+	harnessCmd.Flags().StringVarP(&harnessFlowPath, "flow-path", "f", "", "Path to the flow DSL YAML file")
+	if err := harnessCmd.MarkFlagRequired("flow-path"); err != nil {
+		log.Fatalf("Failed to mark --flow-path as required: %v", err)
+	}
 
-	// Scenario command flags
-	scenarioCmd.Flags().StringVarP(&scenarioEnrichedSpecPath, "enriched-specification-path", "s", "", "Path to the OpenAPI Enriched Specification file (required)")
-	scenarioCmd.MarkFlagRequired("enriched-specification-path")
-	scenarioCmd.Flags().StringVarP(&scenarioOutputPath, "output-path", "o", "./scenario.json", "Path to save the generated scenario file")
+	harnessCmd.Flags().StringVarP(&harnessProbeBodiesPath, "probe-bodies-path", "b", "", "Path to probe-bodies result root containing stage iteration files")
+	if err := harnessCmd.MarkFlagRequired("probe-bodies-path"); err != nil {
+		log.Fatalf("Failed to mark --probe-bodies-path as required: %v", err)
+	}
 
-	// Harness command flags
-	harnessCmd.Flags().StringVarP(&harnessScenarioPath, "scenario-path", "s", "./scenario.json", "Path to the scenario file")
-	harnessCmd.Flags().StringVarP(&harnessWrk2Params, "wrk2params", "w", "-t2 -c100 -d30s -R2000", "Additional wrk2 parameters")
-	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Port for the benchmark harness to use")
+	harnessCmd.Flags().StringVarP(&openApiSpecPath, "openapi-spec-path", "o", "", "Path to the OpenAPI spec file")
+	if err := harnessCmd.MarkFlagRequired("openapi-spec-path"); err != nil {
+		log.Fatalf("Failed to mark --openapi-spec-path as required: %v", err)
+	}
+
+	harnessCmd.Flags().IntVarP(&harnessPort, "port", "p", 8080, "Application service port inside docker network")
+
 	harnessCmd.Flags().StringVarP(&harnessResultPath, "result-path", "r", "./result", "Path to save the results")
-	harnessCmd.Flags().StringVarP(&harnessDockerComposePath, "docker-compose-path", "d", "./docker-compose.yml", "Path to the docker-compose.yml file")
-	harnessCmd.Flags().StringVarP(&harnessServiceName, "service-name", "n", "", "Service name in the docker-compose file to benchmark (required)")
-	harnessCmd.MarkFlagRequired("service-name")
-	harnessCmd.Flags().StringSliceVarP(&harnessCollectPaths, "collect-paths", "c", []string{}, "Paths inside the service container to copy to results (e.g., /var/log/app,/tmp/metrics)")
 
-	// Add subcommands to root
-	rootCmd.AddCommand(enrichCmd)
-	rootCmd.AddCommand(scenarioCmd)
+	harnessCmd.Flags().StringVarP(&harnessDockerComposePath, "docker-compose-path", "d", "", "Path to the docker-compose.yml file")
+	if err := harnessCmd.MarkFlagRequired("docker-compose-path"); err != nil {
+		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
+	}
+
+	harnessCmd.Flags().StringVarP(&harnessServiceName, "service-name", "n", "", "Service name in the docker-compose file to benchmark (required)")
+	if err := harnessCmd.MarkFlagRequired("service-name"); err != nil {
+		log.Fatalf("Failed to mark --service-name as required: %v", err)
+	}
+
+	harnessCmd.Flags().StringSliceVarP(&harnessServiceMountPaths, "service-mount-path", "m", []string{}, "Optional paths inside service container to copy to results (repeat flag or use comma-separated values)")
+	harnessCmd.Flags().StringVar(&harnessDockerSocketPath, "docker-socket-path", "/var/run/docker.sock", "Path to Docker socket for DooD mode")
+	harnessCmd.Flags().BoolVar(&harnessDebugNon2xx, "debug-non2xx", false, "Enable FLOW_DEBUG_NON2XX=1 in wrk2 container for non-2xx debug capture")
+	harnessCmd.Flags().StringVar(&harnessReadinessPath, "readiness-path", "", "Explicit readiness probe path (auto-derived from OpenAPI if empty)")
+
+	// Probe-bodies flags
+	probeBodiesCmd.Flags().StringVarP(&probeFlowPath, "flow-path", "f", "", "Path to flow DSL YAML file")
+	if err := probeBodiesCmd.MarkFlagRequired("flow-path"); err != nil {
+		log.Fatalf("Failed to mark --flow-path as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeOpenAPILink, "openapi-link", "o", "", "OpenAPI file path or URL")
+	if err := probeBodiesCmd.MarkFlagRequired("openapi-link"); err != nil {
+		log.Fatalf("Failed to mark --openapi-link as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeOutputPath, "output-path", "r", "./result-probe", "Output path for accepted generated bodies")
+	if err := probeBodiesCmd.MarkFlagRequired("output-path"); err != nil {
+		log.Fatalf("Failed to mark --output-path as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().StringVarP(&probeDockerComposePath, "docker-compose-path", "d", "", "Path to the docker-compose.yml file for benchmark application")
+	if err := probeBodiesCmd.MarkFlagRequired("docker-compose-path"); err != nil {
+		log.Fatalf("Failed to mark --docker-compose-path as required: %v", err)
+	}
+	probeBodiesCmd.Flags().StringVar(&probeDockerSocketPath, "docker-socket-path", "/var/run/docker.sock", "Path to Docker socket for DooD mode")
+
+	probeBodiesCmd.Flags().StringVarP(&probeServiceName, "service-name", "n", "", "Service name in docker-compose to probe")
+	if err := probeBodiesCmd.MarkFlagRequired("service-name"); err != nil {
+		log.Fatalf("Failed to mark --service-name as required: %v", err)
+	}
+
+	probeBodiesCmd.Flags().IntVarP(&probePort, "port", "p", 8080, "Local running service port to probe")
+	if err := probeBodiesCmd.MarkFlagRequired("port"); err != nil {
+		log.Fatalf("Failed to mark --port as required: %v", err)
+	}
+	probeBodiesCmd.Flags().BoolVar(&probeDebug, "debug", false, "Enable detailed probe debug logs")
+	probeBodiesCmd.Flags().BoolVar(
+		&probeNoRewriteLinked,
+		"no-rewrite-linked-values",
+		false,
+		"Disable replacing linked values with JSON pointers in generated output",
+	)
+	probeBodiesCmd.Flags().StringVar(&probeReadinessPath, "readiness-path", "", "Explicit readiness probe path (auto-derived from OpenAPI if empty)")
+	probeBodiesCmd.Flags().IntVar(&probeMaxTarget, "max-probe-target", 0, "Cap the number of generated iterations per stage (0 = unlimited)")
+
+	// Adding commands to root
 	rootCmd.AddCommand(harnessCmd)
+	rootCmd.AddCommand(probeBodiesCmd)
 }
 
 func Execute() {
@@ -114,54 +169,97 @@ func Execute() {
 	}
 }
 
-func runEnrich(cmd *cobra.Command, args []string) error {
+func runValidateDSL(dslPath string) error {
 	ctx := context.Background()
-	log.Println("Enriching specification:", enrichSpecificationPath)
+	log.Println("Validating DSL file:", dslPath)
 
-	specification := utils.OpenOpenApiSpecFile(ctx, enrichSpecificationPath)
-	enrichProcessor := enricher.NewEnrichProcessor(specification, nil)
-	enrichProcessor.SetHints()
-
-	outputFile := enrichOutputPath + fmt.Sprintf("/enriched-spec-%s.yaml", time.Now().Format("2006-01-02-15:04:05"))
-	err := utils.SaveYAML(outputFile, enrichProcessor.GetSpec())
+	file, err := os.Open(dslPath)
 	if err != nil {
-		return fmt.Errorf("failed to save enriched specification: %w", err)
+		return fmt.Errorf("failed to open DSL file %q: %w", dslPath, err)
+	}
+	defer file.Close()
+
+	var doc any
+	decoder := yaml.NewDecoder(file)
+	if err := decoder.Decode(&doc); err != nil {
+		return fmt.Errorf("failed to parse DSL YAML %q: %w", dslPath, err)
 	}
 
-	log.Printf("Enriched specification saved to: %s", outputFile)
-	return nil
-}
-
-func runScenario(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
-	log.Println("Generating scenario from specification:", scenarioEnrichedSpecPath)
-
-	specification := utils.OpenOpenApiSpecFile(ctx, scenarioEnrichedSpecPath)
-	scenario := scenario_builder.CreateScenarioFromSpecPath(ctx, specification, nil)
-
-	outputFile := scenarioOutputPath + fmt.Sprintf("/scenario-%s.json", time.Now().Format("2006-01-02-15:04:05"))
-	err := model.SerializeScenarioGraph(scenario, outputFile)
-	if err != nil {
-		return fmt.Errorf("failed to save scenario: %w", err)
+	if err := dslvalidator.ValidateDSL(ctx, doc); err != nil {
+		// Try to pretty-print jsonschema validation errors if possible.
+		log.Printf("DSL validation failed for %s", dslPath)
+		utils.PrintJSON(err)
+		return fmt.Errorf("DSL validation failed: %w", err)
 	}
 
-	log.Printf("Scenario saved to: %s", outputFile)
+	log.Printf("DSL validation passed for %s", dslPath)
 	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
+	// Validation input arguments
 	if harnessPort <= 0 {
 		return fmt.Errorf("the --port flag must be a positive integer")
 	}
 
-	log.Printf("Running harness: scenario=%s wrk2=%s result=%s docker-compose=%s port=%d service=%s",
-		harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessPort, harnessServiceName)
-	if len(harnessCollectPaths) > 0 {
-		log.Printf("Will collect paths from service container: %v", harnessCollectPaths)
+	if err := runValidateDSL(harnessFlowPath); err != nil {
+		return fmt.Errorf("flow file validation failed: %w", err)
 	}
 
-	harness.Run(ctx, harnessScenarioPath, harnessWrk2Params, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessCollectPaths)
+	log.Printf("Running harness: flow=%s probe-bodies=%s openapi=%s result=%s docker-compose=%s service=%s port=%d docker-socket=%s service-mount-paths=%v debug-non2xx=%t readiness-path=%q",
+		harnessFlowPath, harnessProbeBodiesPath, openApiSpecPath, harnessResultPath, harnessDockerComposePath, harnessServiceName, harnessPort, harnessDockerSocketPath, harnessServiceMountPaths, harnessDebugNon2xx, harnessReadinessPath)
+
+	return harness.Run(
+		ctx,
+		harnessFlowPath,
+		harnessResultPath,
+		openApiSpecPath,
+		harnessDockerComposePath,
+		harnessServiceName,
+		harnessPort,
+		harnessServiceMountPaths,
+		harnessProbeBodiesPath,
+		harnessDockerSocketPath,
+		harnessDebugNon2xx,
+		harnessReadinessPath,
+	)
+}
+
+func runProbeBodies(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+
+	if probePort <= 0 {
+		return fmt.Errorf("the --port flag must be a positive integer")
+	}
+	if probeDockerComposePath == "" {
+		return fmt.Errorf("the --docker-compose-path flag must be provided")
+	}
+	if probeServiceName == "" {
+		return fmt.Errorf("the --service-name flag must be provided")
+	}
+	if err := runValidateDSL(probeFlowPath); err != nil {
+		return fmt.Errorf("flow file validation failed: %w", err)
+	}
+	log.Printf("Running probe-bodies: flow=%s openapi=%s output=%s docker-compose=%s docker-socket=%s service=%s port=%d no-rewrite-linked-values=%t readiness-path=%q max-probe-target=%d",
+		probeFlowPath, probeOpenAPILink, probeOutputPath, probeDockerComposePath, probeDockerSocketPath, probeServiceName, probePort, probeNoRewriteLinked, probeReadinessPath, probeMaxTarget)
+
+	if err := bodyprobe.Run(
+		ctx,
+		probeFlowPath,
+		probeOpenAPILink,
+		probeOutputPath,
+		probeDockerComposePath,
+		probeDockerSocketPath,
+		probeServiceName,
+		probePort,
+		probeDebug,
+		probeNoRewriteLinked,
+		probeReadinessPath,
+		probeMaxTarget,
+	); err != nil {
+		return err
+	}
 	return nil
 }
